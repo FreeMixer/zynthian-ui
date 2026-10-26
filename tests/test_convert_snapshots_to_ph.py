@@ -44,10 +44,19 @@ class converter_case(unittest.TestCase):
         shutil.copytree(FIXTURES, self.dir)
         self.config = os.path.join(self.dir, "engine_config.json")
 
-    def run_tool(self, *paths):
+    def run_tool(self, *paths, pins=""):
         out = io.StringIO()
-        code = conv.main(["--engine-config", self.config, *paths], out=out)
+        code = conv.main(["--engine-config", self.config, "--pins", pins, *paths], out=out)
         return code, out.getvalue()
+
+    def test_a_plugin_plugin_hostd_refuses_stays_with_jalv(self):
+        pins = os.path.join(self.dir, "pins")
+        code, report = self.run_tool(self.dir, pins=pins)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "one-jv-one-zy.ph.zss")))
+        self.assertIn("left       processor 2: JV/ZamComp: plugin-hostd refuses urn:zamaudio:ZamComp (pin verdict=refused)",
+                      report)
+        # verdict=isolated is hosted, in a worker of its own
+        self.assertIn("converted  processor 4 JV/Surge XT -> PH/Surge XT", report)
 
     def test_the_jalv_plugin_becomes_a_ph_one_and_the_rest_stays(self):
         src = os.path.join(self.dir, "one-jv-one-zy.zss")
@@ -141,7 +150,7 @@ class converted_snapshot_loads(phtest.plugin_hostd_case):
         self.addCleanup(tmp.cleanup)
         src = os.path.join(tmp.name, "one.zss")
         shutil.copy(os.path.join(FIXTURES, "one-jv-one-zy.zss"), src)
-        conv.main(["--engine-config", os.path.join(FIXTURES, "engine_config.json"), src], out=io.StringIO())
+        conv.main(["--engine-config", os.path.join(FIXTURES, "engine_config.json"), "--pins", "", src], out=io.StringIO())
         snapshot = load(os.path.join(tmp.name, "one.ph.zss"))
         code = snapshot["chains"]["1"]["slots"][1]["2"]
         state = snapshot["zs3"]["zs3-0"]["processors"]["2"]

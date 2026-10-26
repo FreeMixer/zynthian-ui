@@ -8,7 +8,7 @@
 # beside its snapshot, foo.zss as foo.ph.zss, and nothing is ever overwritten. Zynthian itself never
 # converts a snapshot when it loads one.
 #
-#   convert_snapshots_to_ph.py [--engine-config FILE] [--suffix .ph] SNAPSHOT_OR_DIR...
+#   convert_snapshots_to_ph.py [--engine-config FILE] [--pins PATHS] [--suffix .ph] SNAPSHOT_OR_DIR...
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 #
@@ -37,13 +37,14 @@ def load_module(name):
 
 
 catalogue = load_module("zynthian_plugin_hostd_catalogue")
+qualification = load_module("zynthian_plugin_qualification")
 
 
 def default_engine_config():
     return os.path.join(os.environ.get("ZYNTHIAN_CONFIG_DIR") or "/zynthian/config", "engine_config.json")
 
 
-def why_not(eng_code, engines):
+def why_not(eng_code, engines, pins=None):
     """None when plugin-hostd can host the processor's plugin, else the reason it stays."""
     if not eng_code.startswith("JV/"):
         return f"{eng_code} is not a jalv plugin"
@@ -52,6 +53,8 @@ def why_not(eng_code, engines):
         return f"{eng_code} is not in the engine config, so its plugin URL is unknown"
     if info.get("TYPE") not in catalogue.ENGINE_TYPES:
         return f"{eng_code} is a {info.get('TYPE')}: plugin-hostd hosts instruments and effects"
+    if (pins or {}).get(info["URL"]) == "refused":
+        return f"{eng_code}: plugin-hostd refuses {info['URL']} (pin verdict=refused)"
     return None
 
 
@@ -69,7 +72,7 @@ def ph_processor_state(state):
     return state
 
 
-def convert_state(snapshot, engines):
+def convert_state(snapshot, engines, pins=None):
     """(converted snapshot, report rows). A row is (processor id, engine code, new code or None, reason)."""
     rows = []
     if snapshot.get("schema_version") != SCHEMA_VERSION:
@@ -80,7 +83,7 @@ def convert_state(snapshot, engines):
     for chain_id, chain in snapshot.get("chains", {}).items():
         for slot in chain.get("slots", []):
             for proc_id, eng_code in slot.items():
-                reason = why_not(eng_code, engines)
+                reason = why_not(eng_code, engines, pins)
                 if reason:
                     rows.append((proc_id, eng_code, None, reason))
                     continue
@@ -111,7 +114,7 @@ def snapshot_files(paths, suffix):
             yield path
 
 
-def convert_file(path, engines, suffix, out):
+def convert_file(path, engines, suffix, out, pins=None):
     """Convert one snapshot. Returns (converted, left, written)."""
     target = target_path(path, suffix)
     try:
@@ -120,7 +123,7 @@ def convert_file(path, engines, suffix, out):
     except (OSError, ValueError) as e:
         print(f"{path}: not read ({e})", file=out)
         return 0, 0, False
-    converted, rows = convert_state(snapshot, engines)
+    converted, rows = convert_state(snapshot, engines, pins)
     if converted is None:
         print(f"{path}: left as it is", file=out)
     elif os.path.exists(target):
@@ -156,6 +159,9 @@ def main(argv=None, out=sys.stdout):
     parser.add_argument("paths", nargs="+", help="snapshot files or directories of them")
     parser.add_argument("--engine-config", default=default_engine_config(),
                         help="Zynthian's engine config, for each jalv plugin's URL and type (default: %(default)s)")
+    parser.add_argument("--pins", default=":".join(qualification.pin_paths()),
+                        help="pin files or directories, ':' between them; a plugin pinned verdict=refused stays "
+                             "with jalv (default: %(default)s)")
     parser.add_argument("--suffix", default=".ph", help="added before .zss in the name of each result (default: %(default)s)")
     args = parser.parse_args(argv)
     try:
@@ -164,9 +170,10 @@ def main(argv=None, out=sys.stdout):
     except (OSError, ValueError) as e:
         print(f"Can't read the engine config {args.engine_config}: {e}", file=out)
         return 2
+    pins = qualification.read_pins([p for p in args.pins.split(":") if p])
     totals = [0, 0, 0, 0]
     for path in snapshot_files(args.paths, args.suffix):
-        converted, left, written = convert_file(path, engines, args.suffix, out)
+        converted, left, written = convert_file(path, engines, args.suffix, out, pins)
         totals = [totals[0] + 1, totals[1] + written, totals[2] + converted, totals[3] + left]
     print(f"{totals[0]} snapshots read, {totals[1]} written; {totals[2]} processors converted, {totals[3]} left as they are",
           file=out)
