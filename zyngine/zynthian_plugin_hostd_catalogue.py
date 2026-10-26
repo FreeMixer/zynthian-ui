@@ -108,6 +108,14 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     finds, to engines and to zynthian_lv2's lists by type. They are enabled when plugin-hostd is
     installed; an LV2 one only when its jalv entry is enabled too."""
     available = shutil.which(binary) is not None
+    try:
+        from zyngine import zynthian_lv2
+        by_type = zynthian_lv2.engines_by_type or {}
+    except ImportError:
+        by_type = {}
+    # Entries of an earlier catalogue, saved with the engine config, are made again or dropped
+    for key in [k for k in engines if k.startswith("PH/")]:
+        by_type.get(engines.pop(key).get("TYPE"), {}).pop(key, None)
     added = {}
     for key, info in list(engines.items()):
         if key.startswith("JV/") and info.get("TYPE") in ENGINE_TYPES:
@@ -127,11 +135,7 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
                       "DESCR": f"CLAP plugin by {plugin['vendor']}, run by plugin-hostd",
                       "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
     engines.update(added)
-    try:
-        from zyngine import zynthian_lv2
-        if zynthian_lv2.engines_by_type is not None:
-            for key, info in added.items():
-                zynthian_lv2.engines_by_type.setdefault(info["TYPE"], {})[key] = info
-    except ImportError:
-        pass
+    for key, info in added.items():
+        if info["TYPE"] in by_type:
+            by_type[info["TYPE"]][key] = info
     return added
