@@ -21,6 +21,7 @@ import subprocess
 
 CONFIG_DIR = os.environ.get('ZYNTHIAN_CONFIG_DIR', "/zynthian/config")
 ENGINE_TYPES = ("MIDI Synth", "Audio Effect")
+PLUGIN_ENGINES = ("plugin-hostd", "jalv")
 # CLAP features: the engine type a plugin takes, then its category
 CLAP_TYPES = (("instrument", "MIDI Synth"), ("audio-effect", "Audio Effect"))
 CLAP_CATS = {
@@ -103,10 +104,26 @@ def scan_clap(cache_path=None):
     return plugins
 
 
+def plugin_engine():
+    """The engine the menus offer LV2 plugins through: ZYNTHIAN_PLUGIN_ENGINE, plugin-hostd by default."""
+    engine = os.environ.get("ZYNTHIAN_PLUGIN_ENGINE", "").strip().lower() or PLUGIN_ENGINES[0]
+    if engine not in PLUGIN_ENGINES:
+        logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE={engine} is not one of {', '.join(PLUGIN_ENGINES)}: using {PLUGIN_ENGINES[0]}")
+        engine = PLUGIN_ENGINES[0]
+    return engine
+
+
+def jalv_twin(key):
+    """The jalv entry an LV2 PH entry was made from, None for a CLAP one."""
+    return None if key.startswith("PH/clap:") or not key.startswith("PH/") else "JV/" + key[3:]
+
+
 def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     """Add a PH entry for each LV2 instrument and effect in engines and each CLAP one omx-clap-scan
     finds, to engines and to zynthian_lv2's lists by type. They are enabled when plugin-hostd is
-    installed; an LV2 one only when its jalv entry is enabled too."""
+    installed; an LV2 one only when its jalv entry is enabled too.
+    With plugin-hostd as the plugin engine, the menus list the PH entry and not its jalv one; the jalv
+    entry stays in engines, so a chain that still holds it loads as it was saved."""
     available = shutil.which(binary) is not None
     try:
         from zyngine import zynthian_lv2
@@ -135,7 +152,21 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
                       "DESCR": f"CLAP plugin by {plugin['vendor']}, run by plugin-hostd",
                       "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
     engines.update(added)
+    by_ph = plugin_engine() == "plugin-hostd"
+    if by_ph and not available:
+        logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: the menus offer jalv")
     for key, info in added.items():
         if info["TYPE"] in by_type:
             by_type[info["TYPE"]][key] = info
+            if by_ph and available and jalv_twin(key):
+                by_type[info["TYPE"]].pop(jalv_twin(key), None)
     return added
+
+
+def set_enabled(engines, key, enabled):
+    """Enable or disable an entry; a PH entry made from a jalv one carries the flag to it, as the
+    catalogue makes the PH entry again from the jalv one on every load."""
+    engines[key]["ENABLED"] = enabled
+    twin = jalv_twin(key)
+    if twin in engines:
+        engines[twin]["ENABLED"] = enabled

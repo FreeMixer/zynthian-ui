@@ -30,6 +30,7 @@ from time import sleep
 # Zynthian specific modules
 from zyngine import *
 from zyngine import zynthian_lv2
+from zyngine import zynthian_plugin_hostd_catalogue
 from zyngui import zynthian_gui_config
 from zyngui.zynthian_gui_base import zynthian_gui_base
 from zyngui.zynthian_gui_selector import zynthian_gui_selector
@@ -339,7 +340,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
                 engine = self.list_data[i][0]
                 if self.show_all:
                     info = self.chain_manager.engine_info[engine]
-                    info['ENABLED'] = not info['ENABLED']
+                    zynthian_plugin_hostd_catalogue.set_enabled(self.chain_manager.engine_info, engine, not info['ENABLED'])
                     if info['EDIT'] == 0:
                         info['EDIT'] = 1
                     self.engine_info_dirty = True
