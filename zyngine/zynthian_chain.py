@@ -29,6 +29,7 @@ import logging
 # Zynthian specific modules
 import zynautoconnect
 from zyngine.zynthian_processor import zynthian_processor
+from zyngine.zynthian_engine_plugin_hostd import sync_chain as plugin_hostd_sync_chain
 from zyncoder.zyncore import lib_zyncore
 
 
@@ -312,6 +313,9 @@ class zynthian_chain:
 
     def rebuild_audio_graph(self):
         """Build dictionary of lists of sources mapped by destination"""
+
+        # plugin-hostd runs this chain's plugins in one worker, in this order
+        plugin_hostd_sync_chain(self)
 
         # TODO: This is called too frequently
         if not zynautoconnect.acquire_lock():
