@@ -1,0 +1,18 @@
+{
+ "schema_version": 5,
+ "chains": {
+  "1": {"title": "Lead", "midi_chan": 1, "midi_thru": false, "audio_thru": false, "zmop_index": 1, "cc_route": [], "slots": [{"3": "JV/Arpeggiator"}, {"4": "JV/Surge XT"}, {"5": "JV/Gone"}], "zctrls": {}},
+  "2": {"title": "Pedalboard", "midi_chan": null, "midi_thru": false, "audio_thru": true, "zmop_index": null, "cc_route": [], "slots": [{"6": "MD"}], "zctrls": {}}
+ },
+ "zs3": {
+  "zs3-0": {
+   "title": "Last state",
+   "processors": {
+    "3": {"bank_info": null, "bank_subdir_info": null, "preset_info": null, "preset_subdir_info": null, "controllers": {"rate": {"value": 8}}, "current_screen_index": 0},
+    "4": {"bank_info": ["", null, "", null], "bank_subdir_info": null, "preset_info": ["", null, "", null], "preset_subdir_info": null, "controllers": {"a_amp_eg_attack": {"value": 0.1}}, "current_screen_index": 0},
+    "5": {"bank_info": null, "bank_subdir_info": null, "preset_info": null, "preset_subdir_info": null, "controllers": {}, "current_screen_index": 0},
+    "6": {"bank_info": null, "bank_subdir_info": null, "preset_info": ["Pedalboard 1", null, "Pedalboard 1", null], "preset_subdir_info": null, "controllers": {}, "current_screen_index": 0}
+   }
+  }
+ }
+}
