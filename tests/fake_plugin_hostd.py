@@ -14,6 +14,7 @@ import sys
 import json
 import socket
 import threading
+import time
 
 # The plugins it knows: each parameter (unit, scale, min, max, default), whether param_info
 # answers for it, the presets it lists and what loading one sets.
@@ -213,6 +214,8 @@ class fake_plugin_hostd:
     def verb_descriptor_get(self, uri):
         if uri not in self.descriptors:
             return "resp -529"
+        if self.descriptors[uri] is None:  # a scan that wrote nothing
+            return "resp -531"
         return f'resp 0 "{self.descriptors[uri]}"'
 
     def verb_state_save(self, directory):
@@ -241,6 +244,7 @@ def main(argv):
         with open(os.environ["FAKE_HOSTD_DESCRIPTORS"]) as f:
             descriptors = json.load(f)
     daemon = fake_plugin_hostd(port, os.environ.get("FAKE_HOSTD_JOURNAL"), descriptors)
+    time.sleep(float(os.environ.get("FAKE_HOSTD_READY_DELAY", "0")))  # listening, not yet ready
     print("plugin-hostd ready!", flush=True)
     daemon.serve()
 

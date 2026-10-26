@@ -8,6 +8,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
+import re
 import sys
 import json
 import time
@@ -24,6 +25,8 @@ ROOT = os.path.dirname(HERE)
 FIXTURES = os.path.join(HERE, "fixtures", "plugin_hostd")
 FAKE = os.path.join(HERE, "fake_plugin_hostd.py")
 sys.path[:0] = [HERE, ROOT]
+# plugin-hostd's declared protocol, as its package installs it
+os.environ["ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR"] = os.path.join(FIXTURES, "protocol")
 
 # Hardware and native libraries: stand-ins, so the import needs no Zynthian
 for _name in ("pexpect", "pyliblo3", "zynconf", "zynautoconnect", "zyncoder", "zyncoder.zyncore"):
@@ -47,6 +50,7 @@ from zyngine import zynthian_plugin_hostd_catalogue as cat  # noqa: E402
 from zyngine.zynthian_chain import zynthian_chain  # noqa: E402
 from zyngine.zynthian_processor import zynthian_processor  # noqa: E402
 from fake_plugin_hostd import fake_plugin_hostd  # noqa: E402
+from fake_plugin_hostd import PLUGINS as fake_plugins  # noqa: E402
 
 with open(os.path.join(FIXTURES, "omx-clap-scan.txt")) as _f:
     CLAP_SCAN = _f.read()
@@ -92,6 +96,7 @@ class plugin_hostd_case(unittest.TestCase):
         self.addCleanup(lambda: (ph.daemon.stop(), ph.daemon.client.close()))
         ph._logged.clear()
         ph.layout_cache.clear()
+        ph.probe_cache.clear()
         ph.DESCRIPTOR_WAIT = 0.5
         # The catalogue makes the PH entries the tests add, from jalv's LV2 ones and the CLAP scan
         self.info = {"JV/Amp": lv2_info("Amp", "urn:test:amp"), "JV/NoPin": lv2_info("NoPin", "urn:test:nopin"),
@@ -218,6 +223,70 @@ class test_daemon(plugin_hostd_case):
             self.assertIn(expected, lines)
         self.assertEqual(lines[-1], "param_set 1000 gain -2.0", "the command that met the dead daemon is sent last")
         self.assertLess(lines.index("param_set 1001 gain 4.5"), lines.index("chain 1 1000 1001"))
+
+
+class test_protocol(plugin_hostd_case):
+    """The reply codes and the readiness line are read from plugin-hostd's installed files."""
+
+    def declared(self, daemon_errors=None, ready="plugin-hostd ready!", host_errors=None):
+        """A protocol directory with the given codes, for a daemon that declares something else."""
+        directory = os.path.join(self.tmp, "protocol")
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "protocol.json"), "w") as f:
+            json.dump({"errors": daemon_errors or [], "readiness": {"daemon_line": ready}}, f)
+        with open(os.path.join(directory, "mod-host.json"), "w") as f:
+            json.dump({"host_errors": host_errors or []}, f)
+        return directory
+
+    def test_a_code_is_named_by_the_file_not_by_the_engine(self):
+        directory = self.declared(
+            [{"name": "ODD", "macro": "PHD_ERR_ODD", "code": -777}],
+            host_errors=[{"name": "ERR_HOST_INVALID_URI", "value": -101}, {"name": "ERR_LV2_INVALID_URI", "value": -101}])
+        p = ph.zynthian_plugin_hostd_protocol.protocol(directory)
+        self.assertEqual((p.name(-777), p.code("ODD"), p.name(-101)), ("PHD_ERR_ODD", -777, "ERR_HOST_INVALID_URI"))
+        self.assertEqual(p.name(-501), "ERR_501", "a code the files do not declare is a bare number")
+
+    def test_the_installed_files_name_what_the_engine_branches_on(self):
+        self.assertEqual(ph.protocol.name(-101), "ERR_HOST_INVALID_URI", "mod-host.json's name, not a retyped one")
+        for code, name in ((-2, "ERR_INSTANCE_ALREADY_EXISTS"), (-529, "PHD_ERR_DESCRIPTOR_ABSENT"),
+                           (-902, "ERR_INVALID_OPERATION")):
+            self.assertEqual(ph.protocol.name(code), name)
+        self.assertEqual(ph.CHAIN_FALLBACK_CODES, (-501, -519, -520, -521))
+        self.assertEqual((ph.DESCRIPTOR_PENDING, ph.DESCRIPTOR_NONE), (-530, (-529, -531)))
+        self.assertEqual(ph.protocol.ready_line, "plugin-hostd ready!")
+
+    def test_the_engine_types_no_reply_code(self):
+        with open(ph.__file__) as f:
+            source = f.read()
+        self.assertEqual(re.findall(r"(?<![\w.\[])-(?:[1-9]|[1-9]\d\d)\b(?![.\w\]])", source), [],
+                         "a reply code in the engine's source is a retyped one")
+
+    def test_without_the_protocol_files_there_is_no_daemon_to_trust(self):
+        empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"))
+        self.assertFalse(empty.loaded)
+        with mock.patch.object(ph, "protocol", empty):
+            with self.assertRaises(ph.plugin_hostd_down):
+                ph.daemon.ensure()
+
+    def test_ready_is_the_declared_line_not_a_port_that_answers(self):
+        ph.daemon.binary = FAKE
+        os.environ["FAKE_HOSTD_READY_DELAY"] = "0.6"
+        log = os.path.join(tempfile.gettempdir(), "plugin-hostd.log")
+        before = os.path.getsize(log) if os.path.exists(log) else 0
+        started = time.monotonic()
+        ph.daemon.ensure()
+        self.assertGreaterEqual(time.monotonic() - started, 0.5, "the port answered at once; the line came later")
+        with open(log, "rb") as f:
+            f.seek(before)
+            self.assertIn("plugin-hostd ready!", f.read().decode().splitlines())
+
+    def test_a_daemon_that_never_says_ready_is_down(self):
+        ph.daemon.binary = FAKE
+        os.environ["FAKE_HOSTD_READY_DELAY"] = "3"
+        with mock.patch.object(ph, "START_TIMEOUT", 0.5):
+            with self.assertRaises(ph.plugin_hostd_down) as down:
+                ph.daemon.ensure()
+        self.assertIn("plugin-hostd ready!", str(down.exception))
 
 
 class test_processor(plugin_hostd_case):
@@ -374,12 +443,80 @@ class test_pages(plugin_hostd_case):
         self.assertEqual(proc.engine._ctrl_screens[2][1], ["p8", "p9"])
         self.assertEqual(len([r for r in logs.output if "omx-panel" in r]), 1)
 
-    def test_without_a_descriptor_the_parameters_come_from_the_catalogue(self):
+    SYNTH = "PH/clap:org.test.synth"
+    SYNTH_URI = "clap:/usr/lib/clap/test.clap#org.test.synth"
+
+    def probe_stub(self, fail=False):
+        os.symlink(os.path.join(FIXTURES, "plugin-hostd-probe"), os.path.join(self.bin, "plugin-hostd-probe"))
+        log = os.path.join(self.tmp, "probe.log")
+        os.environ["PROBE_STUB_LOG"] = log
+        os.environ["PROBE_STUB_DESCRIPTOR"] = os.path.join(FIXTURES, "synth.descriptor.json")
+        if fail:
+            os.environ["PROBE_STUB_FAIL"] = "1"
+        return log
+
+    def test_without_a_descriptor_the_catalogue_names_the_parameters_and_says_nothing_of_steps(self):
         self.serve()
-        proc = self.add(self.chain(), "PH/clap:org.test.synth")
+        proc = self.add(self.chain(), self.SYNTH)
         self.assertEqual([s[1] for s in proc.engine._ctrl_screens], [["1", "2"]])
         wave = proc.controllers_dict["2"]
-        self.assertEqual((wave.name, wave.value_max, wave.is_integer), ("Wave", 3.0, True))
+        self.assertEqual((wave.name, wave.value_max, wave.is_integer), ("Wave", 3.0, False),
+                         "stepped is the daemon's to say, not the engine's guess from the scan")
+
+    def test_a_stepped_parameter_comes_from_the_daemons_descriptor(self):
+        self.serve(descriptors={self.SYNTH_URI: os.path.join(FIXTURES, "synth.descriptor.json")})
+        proc = self.add(self.chain(), self.SYNTH)
+        wave = proc.controllers_dict["2"]
+        self.assertEqual((wave.name, wave.is_integer, wave.value_max), ("Wave", True, 3))
+        self.assertFalse(proc.controllers_dict["1"].is_integer)
+
+    def test_a_stepped_parameter_comes_from_param_info_when_the_daemon_answers_it(self):
+        plugins = {**fake_plugins, self.SYNTH_URI: {**fake_plugins[self.SYNTH_URI], "info": True}}
+        with mock.patch.dict(fake_plugins, plugins):
+            self.serve()
+            proc = self.add(self.chain(), self.SYNTH)
+        self.assertTrue(proc.controllers_dict["2"].is_integer)
+
+    def probed(self, descriptors):
+        log = self.probe_stub()
+        self.serve(descriptors=descriptors)
+        proc = self.add(self.chain(), self.SYNTH)
+        with open(log) as f:
+            self.assertEqual(f.read().split(), ["describe", self.SYNTH_URI])
+        self.assertEqual((proc.controllers_dict["2"].name, proc.controllers_dict["2"].is_integer), ("Wave", True))
+
+    def test_the_probe_describes_a_plugin_the_daemon_has_no_descriptor_for(self):
+        self.probed({})  # -529
+
+    def test_the_probe_describes_a_plugin_whose_scan_failed(self):
+        self.probed({self.SYNTH_URI: None})  # -531
+
+    def test_the_probe_runs_once_per_plugin(self):
+        log = self.probe_stub()
+        self.serve()
+        self.add(self.chain(), self.SYNTH)
+        self.add(self.chain(2), self.SYNTH)
+        with open(log) as f:
+            self.assertEqual(len(f.readlines()), 1)
+
+    def test_a_probe_that_refuses_leaves_the_catalogue_parameters_and_says_so_once(self):
+        self.probe_stub(fail=True)
+        self.serve()
+        with self.assertLogs(level=logging.WARNING) as logs:
+            proc = self.add(self.chain(), self.SYNTH)
+            self.add(self.chain(2), self.SYNTH)
+        self.assertFalse(proc.controllers_dict["2"].is_integer)
+        self.assertEqual(len([r for r in logs.output if "the probe made none" in r]), 1)
+
+    def test_a_pending_scan_is_waited_for_not_probed(self):
+        log = self.probe_stub()
+        fake = self.serve(descriptors={self.SYNTH_URI: os.path.join(FIXTURES, "synth.descriptor.json")})
+        answers = iter(["resp -530", "resp -530"])
+        real = fake.verb_descriptor_get
+        fake.verb_descriptor_get = lambda uri: next(answers, None) or real(uri)
+        proc = self.add(self.chain(), self.SYNTH)
+        self.assertTrue(proc.controllers_dict["2"].is_integer)
+        self.assertFalse(os.path.exists(log), "-530 is ask again, not a missing descriptor")
 
 
 class test_snapshot(plugin_hostd_case):
