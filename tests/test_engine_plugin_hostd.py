@@ -408,6 +408,94 @@ class test_chain(plugin_hostd_case):
             self.assertEqual(1 in ph.daemon.chain_refused, fell_back, f"code {code}")
 
 
+class test_chain_jack_names(plugin_hostd_case):
+    """The members of a CLAP chain are one jack client; the processors name the client the daemon says."""
+
+    CLAP = "PH/clap:in.lsp-plug.limiter_mono"
+
+    def test_the_daemons_replies_name_the_chains_client(self):
+        # The replies of the issue: three CLAP members added, chain 1 0 1 2, read back
+        fake = self.serve()
+        fake.verb_chain_get = lambda chain: "resp 0 w4 0,1,2 0,1,2"
+        fake.verb_worker_list = lambda: "resp 1 w4:111797:clap:up:chain:1:0,1,2"
+        ph.daemon.call("worker_list")
+        ph.daemon.engines = {i: types.SimpleNamespace(jackname=f"effect_{i}") for i in (0, 1, 2)}
+        self.addCleanup(ph.daemon.engines.clear)
+        self.assertEqual(ph.chain_clients(1), {0: "effect_0", 1: "effect_0", 2: "effect_0"})
+
+    def test_a_chain_of_clap_members_is_one_client_named_for_its_head(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(3)]
+        self.assertEqual(fake.chains[1], (1000, 1001, 1002))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000"] * 3)
+        self.assertEqual([p.engine.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1002"],
+                         "each engine still names its own instance")
+        # Every connect is made on ports of the one client that exists: nothing is routed to or from
+        # effect_1001 or effect_1002, and the client is not routed to itself
+        clients = {name for dst, src in chain.audio_routes.items() for name in [dst] + src}
+        self.assertNotIn("effect_1001", clients)
+        self.assertNotIn("effect_1002", clients)
+        self.assertEqual(chain.audio_routes["effect_1000"], [], "the head is fed by the chain's input")
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1000"], "the chain's output is the client's")
+
+    def test_a_mixed_lv2_and_clap_chain_keeps_a_client_per_member(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, self.CLAP)
+        self.assertEqual(fake.chains[1], (1000, 1001))
+        self.assertIn(":lv2-clap:up:chain:1:1000,1001", fake.verb_worker_list())
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
+        self.assertEqual(chain.audio_routes["effect_1001"], ["effect_1000"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1001"])
+
+    def test_a_chain_of_lv2_members_keeps_a_client_per_member(self):
+        self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
+
+    def test_a_member_the_worker_does_not_run_keeps_its_own_client(self):
+        fake = self.serve()
+        chain_get = fake.verb_chain_get
+        # 1001 is quarantined: declared, not running
+        fake.verb_chain_get = lambda c: re.sub(r"(\S+) (\S+) (\S+)$", r"\1 \2 1000,1002", chain_get(c))
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(3)]
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
+
+    def test_a_member_taken_out_goes_back_to_its_own_client_and_the_head_moves(self):
+        self.serve()
+        chain = self.chain()
+        a, b, c = (self.add(chain, self.CLAP) for _ in range(3))
+        self.remove(chain, a)
+        self.assertEqual((b.jackname, c.jackname), ("effect_1001", "effect_1001"), "the head is now 1001")
+        self.remove(chain, c)
+        self.assertEqual(b.jackname, "effect_1001")
+        self.assertNotIn(1, ph.daemon.clients)
+
+    def test_a_refused_chain_gives_every_member_its_own_client(self):
+        self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, self.CLAP), self.add(chain, self.CLAP)
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1000"))
+        c = self.add(chain, "PH/NoPin")  # -501: the daemon will not run the three together
+        self.assertEqual([p.jackname for p in (a, b, c)], ["effect_1000", "effect_1001", "effect_1002"])
+
+    def test_a_restored_daemon_names_the_clients_again(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(2)]
+        ph.daemon.client.close()
+        fake.stop()
+        fake2 = self.serve()
+        ph.daemon.call("worker_list")
+        self.assertEqual(fake2.chains[1], (1000, 1001))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1000"])
+
+
 class test_pages(plugin_hostd_case):
 
     def big(self):

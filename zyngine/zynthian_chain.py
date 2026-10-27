@@ -347,6 +347,8 @@ class zynthian_chain:
                 for jackname in sources:
                     if jackname.startswith("zynmixer"):
                         jackname = jackname.replace("output_", "input_")
+                    elif jackname in self.audio_routes:
+                        continue  # a later member of a worker's one jack client: the client is fed by its first
                     self.audio_routes[jackname] = prev_slot_sources.copy()
                 prev_slot_sources = sources
 

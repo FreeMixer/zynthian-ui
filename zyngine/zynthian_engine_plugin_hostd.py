@@ -42,6 +42,11 @@ SLOW_TIMEOUT = 30.0  # add, chain, state_save and state_load spawn or move worke
 START_TIMEOUT = 10.0
 DESCRIPTOR_WAIT = 5.0
 PROBE_TIMEOUT = 30.0
+# The worker rows whose chain is one JACK client, named like its head (measured with omx-clap-host 0.22.1:
+# a chain on the clap row is the one client effect_<head> with the chain's ports, a chain on the lv2-clap or
+# the lv2 row keeps a client per member). plugin-hostd declares the row, not the client, so this is the one
+# fact here that comes from a measurement; a row not listed keeps a client per member.
+ONE_CLIENT_ROWS = ("clap",)
 STATE_FILE_RE = re.compile(r"^effect_(\d+)(?=\D|$)")
 
 # The reply codes and the readiness line are plugin-hostd's own declaration, never retyped here
@@ -141,6 +146,7 @@ class plugin_hostd_daemon:
         self.engines = {}  # instance number => engine
         self.chains = {}  # zynthian chain id => member instances declared to the daemon
         self.chain_refused = {}  # zynthian chain id => members the daemon refused to run together
+        self.clients = {}  # zynthian chain id => {member instance: jack client of the chain's worker}
 
     def identify(self):
         """True when a plugin-hostd answers on the port: mod-host refuses worker_list."""
@@ -196,6 +202,7 @@ class plugin_hostd_daemon:
         self.client.close()
         self.ensure()
         self.chains = {}
+        self.clients = {}
         for instance in sorted(self.engines):
             for line in self.engines[instance].replay_lines():
                 try:
@@ -254,9 +261,43 @@ class plugin_hostd_daemon:
 daemon = plugin_hostd_daemon()
 
 
+def chain_clients(chain_id):
+    """The jack client of each member the daemon's worker for this chain runs as one client, as the daemon
+    says it: chain_get names the worker and the members it runs, worker_list the row of that worker.
+    {} when the worker is not up, runs another row, or the daemon cannot say; a member it does not run
+    (quarantined) keeps a client of its own."""
+    try:
+        worker, running = daemon.call(f"chain_get {chain_id}")[1].split()[0:3:2]
+        records = daemon.call("worker_list")[1].split()
+    except (OSError, ValueError, *FAILURES) as e:
+        logging.debug(f"plugin-hostd chain {chain_id} read back => {e}")
+        return {}
+    for record in records:
+        fields = record.split(":")
+        # <worker>:<pid>:<row>:<state>:chain:<chain>:<instance>,...
+        if len(fields) >= 7 and fields[0] == worker and fields[4] == "chain" and fields[5] == str(chain_id):
+            if fields[2] not in ONE_CLIENT_ROWS or fields[3] != "up":
+                return {}
+            members = [int(i) for i in running.split(",") if i.isdigit()]
+            if members and members[0] in daemon.engines:
+                return {i: daemon.engines[members[0]].jackname for i in members}
+    return {}
+
+
 def sync_chain(chain):
-    """Run the plugin-hostd members of a zynthian chain in one worker, in signal order.
+    """Run the plugin-hostd members of a zynthian chain in one worker, in signal order, then give each
+    processor the jack client it has now: the chain's own for the members its worker runs as one client,
+    the client of its instance for every other.
     Called from the chain's graph rebuild, so after insert, remove, swap and nudge."""
+    declare_chain(chain)
+    clients = daemon.clients.get(chain.chain_id, {})
+    for slot in chain.synth_slots + chain.audio_slots:
+        for p in slot:
+            if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None:
+                p.jackname = clients.get(p.engine.instance, p.engine.jackname)
+
+
+def declare_chain(chain):
     members = tuple(p.engine.instance for slot in chain.synth_slots + chain.audio_slots for p in slot
                     if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None)
     chain_id = chain.chain_id
@@ -269,6 +310,7 @@ def sync_chain(chain):
             daemon.call(f"chain {chain_id} {' '.join(map(str, members))}", SLOW_TIMEOUT)
             daemon.chains[chain_id] = members
             daemon.chain_refused.pop(chain_id, None)
+            daemon.clients[chain_id] = chain_clients(chain_id)
             return
     except plugin_hostd_error as e:
         if e.code not in CHAIN_FALLBACK_CODES:
@@ -279,6 +321,7 @@ def sync_chain(chain):
     except (plugin_hostd_down, plugin_hostd_timeout) as e:
         logging.error(f"plugin-hostd chain {chain_id} => {e}")
         return
+    daemon.clients.pop(chain_id, None)
     if daemon.chains.pop(chain_id, None):
         try:
             daemon.call(f"chain_clear {chain_id}")
