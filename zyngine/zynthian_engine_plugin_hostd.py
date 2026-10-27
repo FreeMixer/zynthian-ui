@@ -26,6 +26,7 @@ import tempfile
 import subprocess
 
 from zyngine import zynthian_plugin_hostd_protocol
+from zyngine import zynthian_plugin_hostd_grouping
 from zyngine.zynthian_engine import zynthian_engine
 from zyngine.zynthian_controller import zynthian_controller
 from zyngine.zynthian_plugin_hostd_catalogue import clap_plugins
@@ -148,6 +149,10 @@ class plugin_hostd_daemon:
         self.chains = {}  # zynthian chain id => member instances declared to the daemon
         self.chain_refused = {}  # zynthian chain id => members the daemon refused to run together
         self.clients = {}  # zynthian chain id => {member instance: jack client of the chain's worker}
+        self.plans = {}  # zynthian chain id => member instances the daemon planned
+        self.reasons = {}  # member instance => the reason word plan_get gave for it
+        self.plan_verbs = None  # whether the daemon answers plan: None until it was asked
+        self.grouping = None  # False once a plan came back with grouping-off; None while that is not known
 
     def identify(self):
         """True when a plugin-hostd answers on the port: mod-host refuses worker_list."""
@@ -204,6 +209,10 @@ class plugin_hostd_daemon:
         self.ensure()
         self.chains = {}
         self.clients = {}
+        self.plans = {}
+        self.reasons = {}
+        self.plan_verbs = None  # the daemon that came back may be another version, with another setting
+        self.grouping = None
         for instance in sorted(self.engines):
             for line in self.engines[instance].replay_lines():
                 try:
@@ -234,6 +243,7 @@ class plugin_hostd_daemon:
 
     def remove(self, instance):
         self.engines.pop(instance, None)
+        self.reasons.pop(instance, None)
         try:
             self.client.call(f"remove {instance}")
         except (plugin_hostd_error, plugin_hostd_timeout, OSError) as e:
@@ -298,12 +308,25 @@ def sync_chain(chain):
                 p.jackname = clients.get(p.engine.instance, p.engine.jackname)
 
 
-def declare_chain(chain):
+def chain_members(chain):
+    """The plugin-hostd instances of a zynthian chain in signal order; () when fewer than two."""
     members = tuple(p.engine.instance for slot in chain.synth_slots + chain.audio_slots for p in slot
                     if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None)
+    return members if len(members) > 1 else ()
+
+
+def declare_chain(chain):
+    """Hand the chain's members to the daemon: to its planner, which decides what runs together, or, for a
+    daemon that has no plan verb or has grouping off, as one chain, the way plugin-hostd 0.12 took them."""
+    members = chain_members(chain)
     chain_id = chain.chain_id
-    if len(members) < 2:
-        members = ()
+    if daemon.plan_verbs is not False and daemon.grouping is not False:
+        if plan_chain(chain_id, members):
+            return
+    declare_whole_chain(chain_id, members)
+
+
+def declare_whole_chain(chain_id, members):
     if daemon.chains.get(chain_id, ()) == members or daemon.chain_refused.get(chain_id) == members:
         return
     try:
@@ -328,6 +351,136 @@ def declare_chain(chain):
             daemon.call(f"chain_clear {chain_id}")
         except (OSError, *FAILURES) as e:
             logging.debug(f"plugin-hostd chain_clear {chain_id} => {e}")
+
+
+# ---- The plan: the daemon says which of the members run together ----
+
+def parse_segments(text):
+    """'1,2;3;4,5' => [[1, 2], [3], [4, 5]]"""
+    return [[int(i) for i in segment.split(",")] for segment in text.split(";")]
+
+
+def parse_reasons(text):
+    """'3:verdict-isolated,5:plan-refused:<code>' => {3: 'verdict-isolated', 5: 'plan-refused:<code>'}; '-' is none.
+    The instance ends at the first colon: a reason may hold more of them."""
+    reasons = {}
+    if text and text != "-":
+        for item in text.split(","):
+            instance, _, reason = item.partition(":")
+            if instance.isdigit() and reason:
+                reasons.setdefault(int(instance), reason)
+    return reasons
+
+
+def plan_answered():
+    """False when the daemon does not know the plan verbs, asked with a read that a daemon which has
+    them answers: plan_get of a chain nobody planned is the daemon's no-such-plan refusal, a daemon without them
+    refuses the verb as mod-host does."""
+    try:
+        daemon.call("plan_get 0")
+    except plugin_hostd_error as e:
+        return e.code != protocol.code("ERR_INVALID_OPERATION")
+    except (OSError, plugin_hostd_down, plugin_hostd_timeout):
+        return True
+    return True
+
+
+def forget_plan(chain_id):
+    """Every member of the chain back in a worker of its own, and nothing left of what was said of it."""
+    for instance in daemon.plans.pop(chain_id, ()):
+        daemon.reasons.pop(instance, None)
+    daemon.clients.pop(chain_id, None)
+
+
+def clear_plan(chain_id):
+    try:
+        daemon.call(f"plan_clear {chain_id}")
+    except (OSError, *FAILURES) as e:
+        logging.debug(f"plugin-hostd plan_clear {chain_id} => {e}")
+
+
+def segment_clients(chain_id, segments):
+    """{member: jack client} for the members of the segments whose worker is one client: worker_list names the
+    worker of segment k as place chain:<chain>.<k> and its row; the head of the members it runs gives the client.
+    A member that has a worker of its own (quarantined out of its segment) keeps its own."""
+    try:
+        records = daemon.call("worker_list")[1].split()
+    except (OSError, *FAILURES) as e:
+        logging.debug(f"plugin-hostd chain {chain_id} read back => {e}")
+        return {}
+    fields = [r.split(":") for r in records]
+    alone = {int(i) for f in fields if len(f) >= 6 and f[4] == "own" for i in f[-1].split(",") if i.isdigit()}
+    clients = {}
+    for f in fields:
+        # <worker>:<pid>:<row>:<state>:chain:<chain>.<k>:<instance>,...
+        if len(f) < 7 or f[4] != "chain" or f[2] not in ONE_CLIENT_ROWS or f[3] != "up":
+            continue
+        owner, _, k = f[5].partition(".")
+        if owner != str(chain_id) or not k.isdigit() or int(k) >= len(segments):
+            continue
+        running = [int(i) for i in f[6].split(",") if i.isdigit() and int(i) not in alone]
+        if running and running[0] in daemon.engines:
+            clients.update({i: daemon.engines[running[0]].jackname for i in running})
+    return clients
+
+
+def plan_chain(chain_id, members):
+    """Plan the chain. False when the daemon cannot plan (no plan verb, or grouping off), and the chain is
+    then declared whole; True when the plan is the daemon's answer and has been taken."""
+    if members == daemon.plans.get(chain_id, ()):
+        return True
+    if not members:
+        if chain_id in daemon.plans:
+            clear_plan(chain_id)
+        forget_plan(chain_id)
+        return True
+    if daemon.chains.get(chain_id):  # a chain of the same number the controller declared before
+        declare_whole_chain(chain_id, ())
+    try:
+        segments = parse_segments(daemon.call(f"plan {chain_id} {' '.join(map(str, members))}", SLOW_TIMEOUT)[1])
+    except plugin_hostd_error as e:
+        if e.code == protocol.code("ERR_INVALID_OPERATION") and not plan_answered():
+            daemon.plan_verbs = False
+            logging.warning("plugin-hostd does not answer plan: chain %s runs as one chain, as plugin-hostd 0.12 does",
+                            chain_id)
+            return False
+        return plan_refused(chain_id, members, e)
+    except (plugin_hostd_down, plugin_hostd_timeout, ValueError) as e:
+        logging.error(f"plugin-hostd plan {chain_id} => {e}")
+        return True
+    daemon.plan_verbs = True
+    try:
+        reasons = parse_reasons(daemon.call(f"plan_get {chain_id}")[1].partition(" ")[2])
+    except (OSError, ValueError, *FAILURES) as e:
+        logging.error(f"plugin-hostd plan_get {chain_id} => {e}")
+        reasons = {}
+    if "grouping-off" in reasons.values():
+        # The daemon answered the plan and moved nothing: the setting grouping is off, so the chain is
+        # declared whole, as it was before there was a plan
+        daemon.grouping = False
+        logging.info("plugin-hostd has grouping off: chain %s is declared as one chain", chain_id)
+        clear_plan(chain_id)
+        forget_plan(chain_id)
+        return False
+    if any(len(segment) > 1 for segment in segments):
+        daemon.grouping = True
+    forget_plan(chain_id)
+    daemon.plans[chain_id] = members
+    daemon.reasons.update(reasons)
+    daemon.clients[chain_id] = segment_clients(chain_id, segments)
+    return True
+
+
+def plan_refused(chain_id, members, e):
+    """The daemon refused the plan and moved nothing: a plan it had stays, so it is cleared, and every
+    member runs alone with the refusal as its reason."""
+    if chain_id in daemon.plans:
+        clear_plan(chain_id)
+    forget_plan(chain_id)
+    logging.warning("plugin-hostd plan %s => %s: every member runs alone", chain_id, e.name)
+    daemon.plans[chain_id] = members
+    daemon.reasons.update({i: f"plan-refused:{e.code}" for i in members})
+    return True
 
 
 # ---- Controller pages from omx-panel's layout of the plugin's descriptor ----
@@ -424,6 +577,15 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         processor.jackname = self.jackname
         self.set_midi_chan(processor)
         processor.refresh_controllers()
+
+    def grouping_reason(self):
+        """The reason word the daemon's plan gave for this plugin, None when it has none."""
+        return daemon.reasons.get(self.instance)
+
+    def grouping_text(self):
+        """What the plugin's entry says of why it is not grouped with its neighbours, None when nothing."""
+        reason = self.grouping_reason()
+        return zynthian_plugin_hostd_grouping.text(reason, protocol.name) if reason else None
 
     def remove_processor(self, processor):
         # The instance stays until stop: a processor moved to another chain keeps its plugin

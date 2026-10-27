@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# A stand-in for plugin-hostd 0.12 on its command port: NUL-terminated lines, one reply each,
+# A stand-in for plugin-hostd on its command port (0.12 verbs; plan, plan_get and plan_clear of 0.13 on request): NUL-terminated lines, one reply each,
 # the replies and refusal codes its README documents. It runs in a thread of a test, or as a
 # program started the way the engine starts the daemon: fake_plugin_hostd.py -n -p <port> [-c <conf>].
 # Every line it takes is appended to $FAKE_HOSTD_JOURNAL when that is set.
@@ -34,7 +34,8 @@ PLUGINS = {
 
 class fake_plugin_hostd:
 
-    def __init__(self, port, journal=None, descriptors=None, mod_host=False):
+    def __init__(self, port, journal=None, descriptors=None, mod_host=False, planner=False, grouping=False,
+                 group_max=8, verdicts=None):
         self.port = port
         self.journal = journal
         self.descriptors = descriptors or {}
@@ -43,6 +44,11 @@ class fake_plugin_hostd:
         self.params = {}  # instance => {symbol: value}
         self.bypass = {}
         self.chains = {}  # chain => tuple of instances
+        self.planner = planner  # answer plan, plan_get and plan_clear; else -902 like plugin-hostd 0.12
+        self.grouping = grouping  # the setting: whether a plan moves anything
+        self.group_max = group_max
+        self.verdicts = verdicts or {}  # uri => pin verdict word; none is "in-process"
+        self.plans = {}  # chain => (segments, {instance: reason}) as the last plan answered it
         self.lines = []
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -105,7 +111,8 @@ class fake_plugin_hostd:
         try:
             method = getattr(self, "verb_" + verb, None)
             if method is None or (self.mod_host and verb in ("worker_list", "chain", "chain_get", "chain_clear",
-                                                              "descriptor_get", "preset_list", "preset_get")):
+                                                              "descriptor_get", "preset_list", "preset_get")) \
+                    or (not self.planner and verb.startswith("plan")):
                 return "resp -902"
             return method(*args)
         except (TypeError, ValueError, KeyError, IndexError):
@@ -125,10 +132,71 @@ class fake_plugin_hostd:
 
     def verb_worker_list(self):
         held = {m for members in self.chains.values() for m in members}
+        held |= {m for segments, _ in self.applied_plans().values() for s in segments if len(s) > 1 for m in s}
         records = [f"w{i}:{os.getpid()}:{self.row([i])}:up:own:{i}" for i in sorted(self.instances) if i not in held]
         records += [f"{self.chain_worker(c)}:{os.getpid()}:{self.row(m)}:up:chain:{c}:{','.join(map(str, m))}"
                     for c, m in sorted(self.chains.items()) if m]
+        records += [f"w{300 + 10 * c + k}:{os.getpid()}:{self.row(s)}:up:chain:{c}.{k}:{','.join(map(str, s))}"
+                    for c, (segments, _) in sorted(self.applied_plans().items())
+                    for k, s in enumerate(segments) if len(s) > 1]
         return f"resp {len(records)}" + "".join(f" {r}" for r in records)
+
+    def applied_plans(self):
+        """The plans whose segments run: none while the setting grouping is off."""
+        return self.plans if self.grouping else {}
+
+    def verb_plan(self, chain, *members):
+        """The planner of plugin-hostd 0.13, reduced to what the pin verdicts and group_max decide: a member
+        whose pin is isolated or has no verdict stays alone with that reason, the others join the open segment
+        until it holds group_max; a segment of one that only its neighbours made alone says no-neighbour."""
+        chain = int(chain)
+        members = [int(m) for m in members]
+        if not members:
+            return "resp -902"
+        if any(m not in self.instances for m in members):
+            return "resp -518"
+        if len(set(members)) != len(members):
+            return "resp -519"
+        if any(m in held for c, held in self.chains.items() for m in members) or \
+                any(m in s for c, (segments, _) in self.plans.items() if c != chain for s in segments for m in s):
+            return "resp -520"
+        segments, reasons, open_segment = [], {}, []
+        for m in members:
+            verdict = self.verdicts.get(self.instances[m], "in-process")
+            if verdict != "in-process":
+                reasons[m] = "verdict-isolated" if verdict == "isolated" else "no-verdict"
+                if open_segment:
+                    segments.append(open_segment)
+                    open_segment = []
+                segments.append([m])
+                continue
+            if len(open_segment) == self.group_max:
+                segments.append(open_segment)
+                open_segment = []
+                reasons[m] = "group-full"
+            open_segment.append(m)
+        if open_segment:
+            segments.append(open_segment)
+        for s in segments:
+            if len(s) == 1 and s[0] not in reasons:
+                reasons[s[0]] = "no-neighbour"
+        if not self.grouping:
+            for s in segments:
+                if len(s) > 1:
+                    reasons.update({m: "grouping-off" for m in s})
+        self.plans[chain] = (segments, reasons)
+        return "resp 0 " + ";".join(",".join(map(str, s)) for s in segments)
+
+    def verb_plan_get(self, chain):
+        plan = self.plans.get(int(chain))
+        if plan is None:
+            return "resp -532"
+        segments, reasons = plan
+        listed = ",".join(f"{m}:{r}" for m, r in sorted(reasons.items())) or "-"
+        return "resp 0 " + ";".join(",".join(map(str, s)) for s in segments) + " " + listed
+
+    def verb_plan_clear(self, chain):
+        return "resp 0" if self.plans.pop(int(chain), None) is not None else "resp -532"
 
     def verb_add(self, uri, instance, *rest):
         n = int(instance)
@@ -148,6 +216,8 @@ class fake_plugin_hostd:
         for chain, members in list(self.chains.items()):
             if n in members:
                 self.chains[chain] = tuple(m for m in members if m != n)
+        for chain, (segments, reasons) in list(self.plans.items()):
+            self.plans[chain] = ([[m for m in s if m != n] for s in segments if s != [n]], reasons)
         return "resp 0"
 
     def verb_bypass(self, instance, value):
