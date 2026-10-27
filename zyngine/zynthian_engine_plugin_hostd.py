@@ -25,6 +25,7 @@ import tarfile
 import tempfile
 import subprocess
 
+from zyngine import zynthian_plugin_hostd_protocol
 from zyngine.zynthian_engine import zynthian_engine
 from zyngine.zynthian_controller import zynthian_controller
 from zyngine.zynthian_plugin_hostd_catalogue import clap_plugins
@@ -40,26 +41,22 @@ TIMEOUT = 5.0
 SLOW_TIMEOUT = 30.0  # add, chain, state_save and state_load spawn or move workers
 START_TIMEOUT = 10.0
 DESCRIPTOR_WAIT = 5.0
-CHAIN_FALLBACK_CODES = (-501, -519, -520, -521)
+PROBE_TIMEOUT = 30.0
+# The worker rows whose chain is one JACK client, named like its head (measured with omx-clap-host 0.22.1:
+# a chain on the clap row is the one client effect_<head> with the chain's ports, a chain on the lv2-clap or
+# the lv2 row keeps a client per member). plugin-hostd declares the row, not the client, so this is the one
+# fact here that comes from a measurement; a row not listed keeps a client per member.
+ONE_CLIENT_ROWS = ("clap",)
 STATE_FILE_RE = re.compile(r"^effect_(\d+)(?=\D|$)")
 
-# mod-host's reply codes, then the ones plugin-hostd adds (its README, protocol:errors)
-ERROR_NAMES = {
-    -1: "ERR_INSTANCE_INVALID", -2: "ERR_INSTANCE_ALREADY_EXISTS", -3: "ERR_INSTANCE_NON_EXISTS",
-    -4: "ERR_INSTANCE_UNLICENSED", -101: "ERR_LV2_INVALID_URI", -102: "ERR_LV2_INSTANTIATION",
-    -103: "ERR_LV2_INVALID_PARAM_SYMBOL", -104: "ERR_LV2_INVALID_PRESET_URI", -105: "ERR_LV2_CANT_LOAD_STATE",
-    -201: "ERR_JACK_CLIENT_CREATION", -202: "ERR_JACK_CLIENT_ACTIVATION", -203: "ERR_JACK_CLIENT_DEACTIVATION",
-    -204: "ERR_JACK_PORT_REGISTER", -205: "ERR_JACK_PORT_CONNECTION", -206: "ERR_JACK_PORT_DISCONNECTION",
-    -207: "ERR_JACK_VALUE_OUT_OF_RANGE", -901: "ERR_MEMORY_ALLOCATION", -902: "ERR_INVALID_OPERATION",
-}
-for _code, _name in enumerate((
-        "PLACEMENT_INVALID", "NO_BACKEND", "WORKER_SPAWN", "REPLAY", "GAVE_UP", "NO_SUCH_WORKER", "VERB_DROPPED",
-        "PIN_ABSENT", "PIN_BINARY_MISMATCH", "PIN_LAYOUT_MISMATCH", "NO_PARAM_CONTRACT", "LV2_ADAPTER_REFUSED",
-        "NO_NOTE_INPUT", "NOTES_BY_JACK", "NO_PRESET_LIST", "PIN_REFUSED", "NOTE_QUEUE_FULL",
-        "CHAIN_UNKNOWN_INSTANCE", "CHAIN_DUPLICATE", "CHAIN_INSTANCE_BUSY", "CHAIN_MIXED_FORMAT", "NO_SUCH_CHAIN",
-        "PRESET_NOT_OFFERED", "PRESET_INVALID", "PRESET_NEEDS_STATE", "PRESET_PLUGIN_CHANGED", "LOAD_REFUSED",
-        "DIR_NOT_WRITABLE", "DESCRIPTOR_ABSENT", "DESCRIPTOR_PENDING", "DESCRIPTOR_SCAN_FAILED"), start=501):
-    ERROR_NAMES[-_code] = "PHD_ERR_" + _name
+# The reply codes and the readiness line are plugin-hostd's own declaration, never retyped here
+protocol = zynthian_plugin_hostd_protocol.protocol()
+ERROR_NAMES = protocol.names
+CHAIN_FALLBACK_CODES = tuple(protocol.codes[n] for n in (
+    "PLACEMENT_INVALID", "CHAIN_DUPLICATE", "CHAIN_INSTANCE_BUSY", "CHAIN_MIXED_FORMAT")) if protocol.loaded else ()
+DESCRIPTOR_PENDING = protocol.codes.get("DESCRIPTOR_PENDING")
+DESCRIPTOR_NONE = tuple(protocol.codes[n] for n in ("DESCRIPTOR_ABSENT", "DESCRIPTOR_SCAN_FAILED")) \
+    if protocol.loaded else ()
 
 _logged = set()
 
@@ -75,7 +72,7 @@ class plugin_hostd_error(Exception):
 
     def __init__(self, code, line):
         self.code = code
-        self.name = ERROR_NAMES.get(code, f"ERR_{-code}")
+        self.name = protocol.name(code)
         super().__init__(f"'{line}' => {self.name} ({code})")
 
 
@@ -129,7 +126,7 @@ class plugin_hostd_client:
         reply, _, self.buf = self.buf.partition(b"\0")
         words = reply.decode(errors="replace").split(" ", 2)
         if len(words) < 2 or words[0] != "resp":
-            raise plugin_hostd_error(-902, f"{line} (reply '{reply[:64]}')")
+            raise plugin_hostd_error(protocol.code("ERR_INVALID_OPERATION"), f"{line} (reply '{reply[:64]}')")
         code = int(words[1])
         if code < 0:
             raise plugin_hostd_error(code, line)
@@ -149,6 +146,7 @@ class plugin_hostd_daemon:
         self.engines = {}  # instance number => engine
         self.chains = {}  # zynthian chain id => member instances declared to the daemon
         self.chain_refused = {}  # zynthian chain id => members the daemon refused to run together
+        self.clients = {}  # zynthian chain id => {member instance: jack client of the chain's worker}
 
     def identify(self):
         """True when a plugin-hostd answers on the port: mod-host refuses worker_list."""
@@ -162,6 +160,8 @@ class plugin_hostd_daemon:
             return False
 
     def ensure(self):
+        if not protocol.ready_line:
+            raise plugin_hostd_down("plugin-hostd's protocol.json is not installed: no declared readiness line")
         if self.identify():
             return
         binary = shutil.which(self.binary)
@@ -171,16 +171,21 @@ class plugin_hostd_daemon:
         if os.path.isfile(self.conf):
             cmd += ["-c", self.conf]
         logging.info(f"Starting {' '.join(cmd)}")
-        with open(os.path.join(tempfile.gettempdir(), "plugin-hostd.log"), "ab") as log:
+        log_path = os.path.join(tempfile.gettempdir(), "plugin-hostd.log")
+        with open(log_path, "ab") as log:
+            seen = log.tell()
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+        # Ready is the line the daemon declares, printed once both its ports accept
         deadline = time.monotonic() + START_TIMEOUT
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
                 raise plugin_hostd_down(f"{binary} exited with {self.proc.returncode}, see plugin-hostd.log")
-            if self.identify():
-                return
-            time.sleep(0.1)
-        raise plugin_hostd_down(f"{binary} did not answer on port {self.client.port} in {START_TIMEOUT}s")
+            with open(log_path, "rb") as log:
+                log.seek(seen)
+                if protocol.ready_line in log.read().decode(errors="replace").splitlines():
+                    return
+            time.sleep(0.05)
+        raise plugin_hostd_down(f"{binary} did not print '{protocol.ready_line}' in {START_TIMEOUT}s")
 
     def call(self, line, timeout=TIMEOUT):
         """One command; if the connection is gone, bring the daemon back, replay and send it again."""
@@ -197,14 +202,17 @@ class plugin_hostd_daemon:
         self.client.close()
         self.ensure()
         self.chains = {}
+        self.clients = {}
         for instance in sorted(self.engines):
             for line in self.engines[instance].replay_lines():
                 try:
                     self.client.call(line, SLOW_TIMEOUT)
                 except plugin_hostd_error as e:
-                    if e.code != -2:  # -2: the instance outlived the connection, nothing to put back
+                    # An instance that outlived the connection has nothing to put back
+                    outlived = e.code == protocol.code("ERR_INSTANCE_ALREADY_EXISTS")
+                    if not outlived:
                         logging.error(f"plugin-hostd replay => {e}")
-                    if line.startswith("add ") or e.code == -2:
+                    if line.startswith("add ") or outlived:
                         break
         for chain_manager in {id(e.chain_manager): e.chain_manager for e in self.engines.values()}.values():
             for chain in list(chain_manager.chains.values()):
@@ -219,9 +227,9 @@ class plugin_hostd_daemon:
                     self.engines[instance] = engine
                     return instance
                 except plugin_hostd_error as e:
-                    if e.code != -2:  # -2: taken by another controller of this daemon
+                    if e.code != protocol.code("ERR_INSTANCE_ALREADY_EXISTS"):  # taken by another controller of this daemon
                         raise
-        raise plugin_hostd_error(-901, f"add {uri}")
+        raise plugin_hostd_error(protocol.code("ERR_MEMORY_ALLOCATION"), f"add {uri}")
 
     def remove(self, instance):
         self.engines.pop(instance, None)
@@ -253,9 +261,43 @@ class plugin_hostd_daemon:
 daemon = plugin_hostd_daemon()
 
 
+def chain_clients(chain_id):
+    """The jack client of each member the daemon's worker for this chain runs as one client, as the daemon
+    says it: chain_get names the worker and the members it runs, worker_list the row of that worker.
+    {} when the worker is not up, runs another row, or the daemon cannot say; a member it does not run
+    (quarantined) keeps a client of its own."""
+    try:
+        worker, running = daemon.call(f"chain_get {chain_id}")[1].split()[0:3:2]
+        records = daemon.call("worker_list")[1].split()
+    except (OSError, ValueError, *FAILURES) as e:
+        logging.debug(f"plugin-hostd chain {chain_id} read back => {e}")
+        return {}
+    for record in records:
+        fields = record.split(":")
+        # <worker>:<pid>:<row>:<state>:chain:<chain>:<instance>,...
+        if len(fields) >= 7 and fields[0] == worker and fields[4] == "chain" and fields[5] == str(chain_id):
+            if fields[2] not in ONE_CLIENT_ROWS or fields[3] != "up":
+                return {}
+            members = [int(i) for i in running.split(",") if i.isdigit()]
+            if members and members[0] in daemon.engines:
+                return {i: daemon.engines[members[0]].jackname for i in members}
+    return {}
+
+
 def sync_chain(chain):
-    """Run the plugin-hostd members of a zynthian chain in one worker, in signal order.
+    """Run the plugin-hostd members of a zynthian chain in one worker, in signal order, then give each
+    processor the jack client it has now: the chain's own for the members its worker runs as one client,
+    the client of its instance for every other.
     Called from the chain's graph rebuild, so after insert, remove, swap and nudge."""
+    declare_chain(chain)
+    clients = daemon.clients.get(chain.chain_id, {})
+    for slot in chain.synth_slots + chain.audio_slots:
+        for p in slot:
+            if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None:
+                p.jackname = clients.get(p.engine.instance, p.engine.jackname)
+
+
+def declare_chain(chain):
     members = tuple(p.engine.instance for slot in chain.synth_slots + chain.audio_slots for p in slot
                     if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None)
     chain_id = chain.chain_id
@@ -268,6 +310,7 @@ def sync_chain(chain):
             daemon.call(f"chain {chain_id} {' '.join(map(str, members))}", SLOW_TIMEOUT)
             daemon.chains[chain_id] = members
             daemon.chain_refused.pop(chain_id, None)
+            daemon.clients[chain_id] = chain_clients(chain_id)
             return
     except plugin_hostd_error as e:
         if e.code not in CHAIN_FALLBACK_CODES:
@@ -278,6 +321,7 @@ def sync_chain(chain):
     except (plugin_hostd_down, plugin_hostd_timeout) as e:
         logging.error(f"plugin-hostd chain {chain_id} => {e}")
         return
+    daemon.clients.pop(chain_id, None)
     if daemon.chains.pop(chain_id, None):
         try:
             daemon.call(f"chain_clear {chain_id}")
@@ -313,6 +357,36 @@ def panel_layout(path):
         return None
     layout_cache[key] = (pages, {str(c["param"]): c for c in layout.get("controls", [])})
     return layout_cache[key]
+
+
+probe_cache = {}  # plugin uri => the descriptor file plugin-hostd-probe describe wrote, None when it refused
+
+
+def probe_descriptor(uri, why):
+    """The daemon has no descriptor (absent, or its scan failed): describe the plugin here, once."""
+    if uri not in probe_cache:
+        probe_cache[uri] = None
+        probe = shutil.which("plugin-hostd-probe")
+        if not probe:
+            log_once(("descriptor", uri), "plugin-hostd has no descriptor for %s (%s) and plugin-hostd-probe "
+                     "is not installed", uri, why)
+            return None
+        target = uri if uri.startswith("clap:") else f"lv2:{uri}"
+        out_dir = os.path.join(tempfile.gettempdir(), "plugin-hostd-probe")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, re.sub(r"[^A-Za-z0-9._-]+", "_", uri) + ".json")
+        try:
+            done = subprocess.run([probe, "describe", target], capture_output=True, timeout=PROBE_TIMEOUT)
+            if done.returncode == 0 and done.stdout.strip():
+                with open(path, "wb") as f:
+                    f.write(done.stdout)
+                probe_cache[uri] = path
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.warning("plugin-hostd-probe describe %s failed (%s)", target, e)
+        if not probe_cache[uri]:
+            log_once(("descriptor", uri), "plugin-hostd has no descriptor for %s (%s) and the probe made none",
+                     uri, why)
+    return probe_cache[uri]
 
 
 # ---- The engine: one per processor, its plugin one instance of the shared daemon ----
@@ -375,7 +449,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             logging.error(f"plugin-hostd {e}")
 
     def send_quiet(self, line):
-        """The reply of a query, None when the daemon has no answer for it (-511, -103, ...)."""
+        """The reply of a query, None when the daemon has no answer for it (no parameter contract, no such symbol)."""
         try:
             return daemon.call(line)[1]
         except FAILURES:
@@ -393,26 +467,31 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     # ---- Controllers ----
 
     def descriptor_path(self):
+        """The descriptor file of the plugin: the daemon's scan of it, else a describe of our own."""
         deadline = time.monotonic() + DESCRIPTOR_WAIT
         while True:
             try:
                 return daemon.call(f"descriptor_get {self.plugin_uri}")[1].strip().strip('"')
             except plugin_hostd_error as e:
-                if e.code != -530 or time.monotonic() > deadline:  # -530: the add's scan still runs
-                    log_once(("descriptor", self.plugin_uri), "plugin-hostd has no descriptor for %s (%s)",
-                             self.plugin_uri, e.name)
-                    return None
+                if e.code == DESCRIPTOR_PENDING and time.monotonic() <= deadline:  # the add's scan still runs
+                    time.sleep(0.25)
+                    continue
+                if e.code in DESCRIPTOR_NONE:
+                    return probe_descriptor(self.plugin_uri, e.name)
+                log_once(("descriptor", self.plugin_uri), "plugin-hostd has no descriptor for %s (%s)",
+                         self.plugin_uri, e.name)
+                return None
             except (plugin_hostd_down, plugin_hostd_timeout):
                 return None
-            time.sleep(0.25)
 
     def param_list(self, dlist):
-        """(symbol, name, meta) in the plugin's own order: its descriptor, its CLAP scan or its LV2 ports."""
+        """(symbol, name, meta) in the plugin's own order: its descriptor, else its CLAP scan or its LV2 ports.
+        The ports and the scan carry no scale: a stepped parameter is the descriptor's or param_info's to say."""
         if dlist:
             return [(str(c["id"]), c.get("label") or c.get("name"), c) for c in dlist]
         if self.nickname in clap_plugins:
-            return [(p["id"], p["name"], {"travel": {"min": p["min"], "max": p["max"], "default": p["default"],
-                    "scale": "stepped" if p["stepped"] else "linear"}}) for p in clap_plugins[self.nickname]["params"]]
+            return [(p["id"], p["name"], {"travel": {"min": p["min"], "max": p["max"], "default": p["default"]}})
+                    for p in clap_plugins[self.nickname]["params"]]
         try:
             from zyngine import zynthian_lv2
             ports = zynthian_lv2.get_plugin_ports(self.plugin_uri).values()
@@ -420,8 +499,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             logging.error(f"Can't read the ports of {self.plugin_uri} => {e}")
             return []
         return [(p["symbol"], p["name"], {"travel": {"min": p["range"]["min"], "max": p["range"]["max"],
-                 "default": p["value"], "scale": "stepped" if p["is_integer"] else "linear"},
-                 "kind": "toggle" if p["is_toggled"] else "travel"}) for p in ports if not p.get("is_path")]
+                 "default": p["value"]}, "kind": "toggle" if p["is_toggled"] else "travel"})
+                for p in ports if not p.get("is_path")]
 
     def pages(self):
         """[(page name, [(symbol, label, unit, descriptor control)])]: omx-panel's pages of eight,

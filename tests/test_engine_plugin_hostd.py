@@ -8,6 +8,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 import os
+import re
 import sys
 import json
 import time
@@ -24,6 +25,8 @@ ROOT = os.path.dirname(HERE)
 FIXTURES = os.path.join(HERE, "fixtures", "plugin_hostd")
 FAKE = os.path.join(HERE, "fake_plugin_hostd.py")
 sys.path[:0] = [HERE, ROOT]
+# plugin-hostd's declared protocol, as its package installs it
+os.environ["ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR"] = os.path.join(FIXTURES, "protocol")
 
 # Hardware and native libraries: stand-ins, so the import needs no Zynthian
 for _name in ("pexpect", "pyliblo3", "zynconf", "zynautoconnect", "zyncoder", "zyncoder.zyncore"):
@@ -47,9 +50,17 @@ from zyngine import zynthian_plugin_hostd_catalogue as cat  # noqa: E402
 from zyngine.zynthian_chain import zynthian_chain  # noqa: E402
 from zyngine.zynthian_processor import zynthian_processor  # noqa: E402
 from fake_plugin_hostd import fake_plugin_hostd  # noqa: E402
+from fake_plugin_hostd import PLUGINS as fake_plugins  # noqa: E402
 
 with open(os.path.join(FIXTURES, "omx-clap-scan.txt")) as _f:
     CLAP_SCAN = _f.read()
+
+
+CLAP_SCAN_MVERB = """  plugin studio.kx.distrho.MVerb "MVerb" vendor falkTX version 1.0
+    features audio-effect reverb stereo
+    in  main 2 channels unknown "in" in_1
+    out main 2 channels unknown "out" out_1
+"""
 
 
 def lv2_info(name, uri, etype="Audio Effect"):
@@ -92,6 +103,7 @@ class plugin_hostd_case(unittest.TestCase):
         self.addCleanup(lambda: (ph.daemon.stop(), ph.daemon.client.close()))
         ph._logged.clear()
         ph.layout_cache.clear()
+        ph.probe_cache.clear()
         ph.DESCRIPTOR_WAIT = 0.5
         # The catalogue makes the PH entries the tests add, from jalv's LV2 ones and the CLAP scan
         self.info = {"JV/Amp": lv2_info("Amp", "urn:test:amp"), "JV/NoPin": lv2_info("NoPin", "urn:test:nopin"),
@@ -220,6 +232,70 @@ class test_daemon(plugin_hostd_case):
         self.assertLess(lines.index("param_set 1001 gain 4.5"), lines.index("chain 1 1000 1001"))
 
 
+class test_protocol(plugin_hostd_case):
+    """The reply codes and the readiness line are read from plugin-hostd's installed files."""
+
+    def declared(self, daemon_errors=None, ready="plugin-hostd ready!", host_errors=None):
+        """A protocol directory with the given codes, for a daemon that declares something else."""
+        directory = os.path.join(self.tmp, "protocol")
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, "protocol.json"), "w") as f:
+            json.dump({"errors": daemon_errors or [], "readiness": {"daemon_line": ready}}, f)
+        with open(os.path.join(directory, "mod-host.json"), "w") as f:
+            json.dump({"host_errors": host_errors or []}, f)
+        return directory
+
+    def test_a_code_is_named_by_the_file_not_by_the_engine(self):
+        directory = self.declared(
+            [{"name": "ODD", "macro": "PHD_ERR_ODD", "code": -777}],
+            host_errors=[{"name": "ERR_HOST_INVALID_URI", "value": -101}, {"name": "ERR_LV2_INVALID_URI", "value": -101}])
+        p = ph.zynthian_plugin_hostd_protocol.protocol(directory)
+        self.assertEqual((p.name(-777), p.code("ODD"), p.name(-101)), ("PHD_ERR_ODD", -777, "ERR_HOST_INVALID_URI"))
+        self.assertEqual(p.name(-501), "ERR_501", "a code the files do not declare is a bare number")
+
+    def test_the_installed_files_name_what_the_engine_branches_on(self):
+        self.assertEqual(ph.protocol.name(-101), "ERR_HOST_INVALID_URI", "mod-host.json's name, not a retyped one")
+        for code, name in ((-2, "ERR_INSTANCE_ALREADY_EXISTS"), (-529, "PHD_ERR_DESCRIPTOR_ABSENT"),
+                           (-902, "ERR_INVALID_OPERATION")):
+            self.assertEqual(ph.protocol.name(code), name)
+        self.assertEqual(ph.CHAIN_FALLBACK_CODES, (-501, -519, -520, -521))
+        self.assertEqual((ph.DESCRIPTOR_PENDING, ph.DESCRIPTOR_NONE), (-530, (-529, -531)))
+        self.assertEqual(ph.protocol.ready_line, "plugin-hostd ready!")
+
+    def test_the_engine_types_no_reply_code(self):
+        with open(ph.__file__) as f:
+            source = f.read()
+        self.assertEqual(re.findall(r"(?<![\w.\[])-(?:[1-9]|[1-9]\d\d)\b(?![.\w\]])", source), [],
+                         "a reply code in the engine's source is a retyped one")
+
+    def test_without_the_protocol_files_there_is_no_daemon_to_trust(self):
+        empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"))
+        self.assertFalse(empty.loaded)
+        with mock.patch.object(ph, "protocol", empty):
+            with self.assertRaises(ph.plugin_hostd_down):
+                ph.daemon.ensure()
+
+    def test_ready_is_the_declared_line_not_a_port_that_answers(self):
+        ph.daemon.binary = FAKE
+        os.environ["FAKE_HOSTD_READY_DELAY"] = "0.6"
+        log = os.path.join(tempfile.gettempdir(), "plugin-hostd.log")
+        before = os.path.getsize(log) if os.path.exists(log) else 0
+        started = time.monotonic()
+        ph.daemon.ensure()
+        self.assertGreaterEqual(time.monotonic() - started, 0.5, "the port answered at once; the line came later")
+        with open(log, "rb") as f:
+            f.seek(before)
+            self.assertIn("plugin-hostd ready!", f.read().decode().splitlines())
+
+    def test_a_daemon_that_never_says_ready_is_down(self):
+        ph.daemon.binary = FAKE
+        os.environ["FAKE_HOSTD_READY_DELAY"] = "3"
+        with mock.patch.object(ph, "START_TIMEOUT", 0.5):
+            with self.assertRaises(ph.plugin_hostd_down) as down:
+                ph.daemon.ensure()
+        self.assertIn("plugin-hostd ready!", str(down.exception))
+
+
 class test_processor(plugin_hostd_case):
 
     def test_add_gives_the_jack_client_of_the_instance(self):
@@ -247,7 +323,7 @@ class test_processor(plugin_hostd_case):
 
     def test_presets_are_listed_and_loaded(self):
         fake = self.serve()
-        proc = self.add(self.chain(), "PH/clap:org.test.synth")
+        proc = self.add(self.chain(), "PH/clap:/usr/lib/clap/test.clap#org.test.synth")
         presets = proc.engine.get_preset_list(proc.engine.get_bank_list()[0], proc)
         self.assertEqual([(p[0], p[2]) for p in presets], [("factory:warm", "Warm Pad"), ("factory:bright", "Bright Lead")])
         self.assertTrue(proc.engine.set_preset(proc, presets[0]))
@@ -339,6 +415,94 @@ class test_chain(plugin_hostd_case):
             self.assertEqual(1 in ph.daemon.chain_refused, fell_back, f"code {code}")
 
 
+class test_chain_jack_names(plugin_hostd_case):
+    """The members of a CLAP chain are one jack client; the processors name the client the daemon says."""
+
+    CLAP = "PH/clap:in.lsp-plug.limiter_mono"
+
+    def test_the_daemons_replies_name_the_chains_client(self):
+        # The replies of the issue: three CLAP members added, chain 1 0 1 2, read back
+        fake = self.serve()
+        fake.verb_chain_get = lambda chain: "resp 0 w4 0,1,2 0,1,2"
+        fake.verb_worker_list = lambda: "resp 1 w4:111797:clap:up:chain:1:0,1,2"
+        ph.daemon.call("worker_list")
+        ph.daemon.engines = {i: types.SimpleNamespace(jackname=f"effect_{i}") for i in (0, 1, 2)}
+        self.addCleanup(ph.daemon.engines.clear)
+        self.assertEqual(ph.chain_clients(1), {0: "effect_0", 1: "effect_0", 2: "effect_0"})
+
+    def test_a_chain_of_clap_members_is_one_client_named_for_its_head(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(3)]
+        self.assertEqual(fake.chains[1], (1000, 1001, 1002))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000"] * 3)
+        self.assertEqual([p.engine.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1002"],
+                         "each engine still names its own instance")
+        # Every connect is made on ports of the one client that exists: nothing is routed to or from
+        # effect_1001 or effect_1002, and the client is not routed to itself
+        clients = {name for dst, src in chain.audio_routes.items() for name in [dst] + src}
+        self.assertNotIn("effect_1001", clients)
+        self.assertNotIn("effect_1002", clients)
+        self.assertEqual(chain.audio_routes["effect_1000"], [], "the head is fed by the chain's input")
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1000"], "the chain's output is the client's")
+
+    def test_a_mixed_lv2_and_clap_chain_keeps_a_client_per_member(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, self.CLAP)
+        self.assertEqual(fake.chains[1], (1000, 1001))
+        self.assertIn(":lv2-clap:up:chain:1:1000,1001", fake.verb_worker_list())
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
+        self.assertEqual(chain.audio_routes["effect_1001"], ["effect_1000"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1001"])
+
+    def test_a_chain_of_lv2_members_keeps_a_client_per_member(self):
+        self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
+
+    def test_a_member_the_worker_does_not_run_keeps_its_own_client(self):
+        fake = self.serve()
+        chain_get = fake.verb_chain_get
+        # 1001 is quarantined: declared, not running
+        fake.verb_chain_get = lambda c: re.sub(r"(\S+) (\S+) (\S+)$", r"\1 \2 1000,1002", chain_get(c))
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(3)]
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
+
+    def test_a_member_taken_out_goes_back_to_its_own_client_and_the_head_moves(self):
+        self.serve()
+        chain = self.chain()
+        a, b, c = (self.add(chain, self.CLAP) for _ in range(3))
+        self.remove(chain, a)
+        self.assertEqual((b.jackname, c.jackname), ("effect_1001", "effect_1001"), "the head is now 1001")
+        self.remove(chain, c)
+        self.assertEqual(b.jackname, "effect_1001")
+        self.assertNotIn(1, ph.daemon.clients)
+
+    def test_a_refused_chain_gives_every_member_its_own_client(self):
+        self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, self.CLAP), self.add(chain, self.CLAP)
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1000"))
+        c = self.add(chain, "PH/NoPin")  # -501: the daemon will not run the three together
+        self.assertEqual([p.jackname for p in (a, b, c)], ["effect_1000", "effect_1001", "effect_1002"])
+
+    def test_a_restored_daemon_names_the_clients_again(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(2)]
+        ph.daemon.client.close()
+        fake.stop()
+        fake2 = self.serve()
+        ph.daemon.call("worker_list")
+        self.assertEqual(fake2.chains[1], (1000, 1001))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1000"])
+
+
 class test_pages(plugin_hostd_case):
 
     def big(self):
@@ -374,12 +538,80 @@ class test_pages(plugin_hostd_case):
         self.assertEqual(proc.engine._ctrl_screens[2][1], ["p8", "p9"])
         self.assertEqual(len([r for r in logs.output if "omx-panel" in r]), 1)
 
-    def test_without_a_descriptor_the_parameters_come_from_the_catalogue(self):
+    SYNTH = "PH/clap:/usr/lib/clap/test.clap#org.test.synth"
+    SYNTH_URI = "clap:/usr/lib/clap/test.clap#org.test.synth"
+
+    def probe_stub(self, fail=False):
+        os.symlink(os.path.join(FIXTURES, "plugin-hostd-probe"), os.path.join(self.bin, "plugin-hostd-probe"))
+        log = os.path.join(self.tmp, "probe.log")
+        os.environ["PROBE_STUB_LOG"] = log
+        os.environ["PROBE_STUB_DESCRIPTOR"] = os.path.join(FIXTURES, "synth.descriptor.json")
+        if fail:
+            os.environ["PROBE_STUB_FAIL"] = "1"
+        return log
+
+    def test_without_a_descriptor_the_catalogue_names_the_parameters_and_says_nothing_of_steps(self):
         self.serve()
-        proc = self.add(self.chain(), "PH/clap:org.test.synth")
+        proc = self.add(self.chain(), self.SYNTH)
         self.assertEqual([s[1] for s in proc.engine._ctrl_screens], [["1", "2"]])
         wave = proc.controllers_dict["2"]
-        self.assertEqual((wave.name, wave.value_max, wave.is_integer), ("Wave", 3.0, True))
+        self.assertEqual((wave.name, wave.value_max, wave.is_integer), ("Wave", 3.0, False),
+                         "stepped is the daemon's to say, not the engine's guess from the scan")
+
+    def test_a_stepped_parameter_comes_from_the_daemons_descriptor(self):
+        self.serve(descriptors={self.SYNTH_URI: os.path.join(FIXTURES, "synth.descriptor.json")})
+        proc = self.add(self.chain(), self.SYNTH)
+        wave = proc.controllers_dict["2"]
+        self.assertEqual((wave.name, wave.is_integer, wave.value_max), ("Wave", True, 3))
+        self.assertFalse(proc.controllers_dict["1"].is_integer)
+
+    def test_a_stepped_parameter_comes_from_param_info_when_the_daemon_answers_it(self):
+        plugins = {**fake_plugins, self.SYNTH_URI: {**fake_plugins[self.SYNTH_URI], "info": True}}
+        with mock.patch.dict(fake_plugins, plugins):
+            self.serve()
+            proc = self.add(self.chain(), self.SYNTH)
+        self.assertTrue(proc.controllers_dict["2"].is_integer)
+
+    def probed(self, descriptors):
+        log = self.probe_stub()
+        self.serve(descriptors=descriptors)
+        proc = self.add(self.chain(), self.SYNTH)
+        with open(log) as f:
+            self.assertEqual(f.read().split(), ["describe", self.SYNTH_URI])
+        self.assertEqual((proc.controllers_dict["2"].name, proc.controllers_dict["2"].is_integer), ("Wave", True))
+
+    def test_the_probe_describes_a_plugin_the_daemon_has_no_descriptor_for(self):
+        self.probed({})  # -529
+
+    def test_the_probe_describes_a_plugin_whose_scan_failed(self):
+        self.probed({self.SYNTH_URI: None})  # -531
+
+    def test_the_probe_runs_once_per_plugin(self):
+        log = self.probe_stub()
+        self.serve()
+        self.add(self.chain(), self.SYNTH)
+        self.add(self.chain(2), self.SYNTH)
+        with open(log) as f:
+            self.assertEqual(len(f.readlines()), 1)
+
+    def test_a_probe_that_refuses_leaves_the_catalogue_parameters_and_says_so_once(self):
+        self.probe_stub(fail=True)
+        self.serve()
+        with self.assertLogs(level=logging.WARNING) as logs:
+            proc = self.add(self.chain(), self.SYNTH)
+            self.add(self.chain(2), self.SYNTH)
+        self.assertFalse(proc.controllers_dict["2"].is_integer)
+        self.assertEqual(len([r for r in logs.output if "the probe made none" in r]), 1)
+
+    def test_a_pending_scan_is_waited_for_not_probed(self):
+        log = self.probe_stub()
+        fake = self.serve(descriptors={self.SYNTH_URI: os.path.join(FIXTURES, "synth.descriptor.json")})
+        answers = iter(["resp -530", "resp -530"])
+        real = fake.verb_descriptor_get
+        fake.verb_descriptor_get = lambda uri: next(answers, None) or real(uri)
+        proc = self.add(self.chain(), self.SYNTH)
+        self.assertTrue(proc.controllers_dict["2"].is_integer)
+        self.assertFalse(os.path.exists(log), "-530 is ask again, not a missing descriptor")
 
 
 class test_snapshot(plugin_hostd_case):
@@ -413,6 +645,17 @@ class test_snapshot(plugin_hostd_case):
 
 class test_catalogue(plugin_hostd_case):
 
+    def test_clap_files_that_share_a_plugin_id_are_separate_entries(self):
+        # DPF-built files report one id for several files; the pin URI names the file too
+        scan = "".join(f'file /usr/lib/clap/{f}.clap\n' + CLAP_SCAN_MVERB for f in ("3BandEQ", "3BandSplitter"))
+        added = cat.add_catalogue({}, clap=cat.parse_clap_scan(scan), binary=FAKE)
+        self.assertEqual(sorted(added), ["PH/clap:/usr/lib/clap/3BandEQ.clap#studio.kx.distrho.MVerb",
+                                         "PH/clap:/usr/lib/clap/3BandSplitter.clap#studio.kx.distrho.MVerb"])
+        self.assertEqual(len({info["ID"] for info in added.values()}), 2)
+        for key, info in added.items():
+            self.assertEqual(key, "PH/" + info["URL"])
+            self.assertEqual(cat.clap_plugins[key]["path"], info["URL"].split("#")[0][5:])
+
     def test_clap_scan_text_is_parsed(self):
         plugins = cat.parse_clap_scan(CLAP_SCAN)
         self.assertEqual([p["id"] for p in plugins], ["in.lsp-plug.limiter_mono", "org.test.synth", "org.test.arp"])
@@ -430,13 +673,13 @@ class test_catalogue(plugin_hostd_case):
         added = cat.add_catalogue(engines, clap=cat.parse_clap_scan(CLAP_SCAN), binary=FAKE)
         self.assertNotIn("PH/clap:org.test.gone", engines, "a plugin no longer installed leaves the catalogue")
         self.assertNotIn("PH/clap:org.test.gone", _lv2.engines_by_type["Audio Effect"])
-        self.assertEqual(sorted(added), ["PH/ZamComp", "PH/clap:in.lsp-plug.limiter_mono", "PH/clap:org.test.synth"])
+        self.assertEqual(sorted(added), ["PH/ZamComp", "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono", "PH/clap:/usr/lib/clap/test.clap#org.test.synth"])
         self.assertEqual(added["PH/ZamComp"]["URL"], "urn:zamaudio:ZamComp")
-        synth = added["PH/clap:org.test.synth"]
+        synth = added["PH/clap:/usr/lib/clap/test.clap#org.test.synth"]
         self.assertEqual((synth["TYPE"], synth["CAT"], synth["URL"], synth["ENABLED"]),
                          ("MIDI Synth", "Synth", "clap:/usr/lib/clap/test.clap#org.test.synth", True))
-        self.assertEqual(added["PH/clap:in.lsp-plug.limiter_mono"]["CAT"], "Dynamics")
-        self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:org.test.synth"], synth)
+        self.assertEqual(added["PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"]["CAT"], "Dynamics")
+        self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:/usr/lib/clap/test.clap#org.test.synth"], synth)
         self.assertTrue(set(added) <= set(engines))
 
     def test_without_the_daemon_installed_the_entries_are_disabled(self):

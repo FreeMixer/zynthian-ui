@@ -1,0 +1,6 @@
+{
+ "format": "some-other-measurements",
+ "formatVersion": "3.0",
+ "run": {"measuredAt": "2026-10-25T03:10:00+02:00"},
+ "plugins": [{"uri": "urn:q:fast", "stability": {"crashes": [{"signal": "SIGSEGV"}]}}]
+}

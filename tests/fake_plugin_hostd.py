@@ -14,6 +14,7 @@ import sys
 import json
 import socket
 import threading
+import time
 
 # The plugins it knows: each parameter (unit, scale, min, max, default), whether param_info
 # answers for it, the presets it lists and what loading one sets.
@@ -24,6 +25,8 @@ PLUGINS = {
         "params": {"1": ("-", "linear", 0.0, 1.0, 0.5), "2": ("-", "stepped", 0.0, 3.0, 0.0)},
         "info": False,  # omx-clap-host 0.8 answers -511 for every parameter
         "presets": [("factory:warm", "Warm Pad", {"1": 0.25}), ("factory:bright", "Bright Lead", {"1": 0.75})]},
+    "clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono": {
+        "params": {"1574856808": ("-", "linear", -48.0, 0.0, 0.0), "2849352001": ("-", "stepped", 0.0, 1.0, 1.0)}, "info": False, "presets": None},
     "urn:test:big": {"params": {f"p{i}": ("Hz", "linear", 0.0, 100.0, 10.0) for i in range(10)},
                      "info": False, "presets": None},
 }
@@ -111,9 +114,21 @@ class fake_plugin_hostd:
     def plugin(self, instance):
         return PLUGINS[self.instances[int(instance)]]
 
+    def row(self, members):
+        """The worker row that runs these members: omx-clap-host's clap row for CLAP ones, its lv2-clap row
+        when LV2 ones are among them, mod-host's lv2 row for LV2 ones alone."""
+        clap = [self.instances[m].startswith("clap:") for m in members]
+        return "clap" if all(clap) else "lv2-clap" if any(clap) else "lv2"
+
+    def chain_worker(self, chain):
+        return f"w{100 + chain}"
+
     def verb_worker_list(self):
-        return f"resp {len(self.instances)}" + "".join(
-            f" w{i}:{os.getpid()}:lv2:up:own:{i}" for i in sorted(self.instances))
+        held = {m for members in self.chains.values() for m in members}
+        records = [f"w{i}:{os.getpid()}:{self.row([i])}:up:own:{i}" for i in sorted(self.instances) if i not in held]
+        records += [f"{self.chain_worker(c)}:{os.getpid()}:{self.row(m)}:up:chain:{c}:{','.join(map(str, m))}"
+                    for c, m in sorted(self.chains.items()) if m]
+        return f"resp {len(records)}" + "".join(f" {r}" for r in records)
 
     def verb_add(self, uri, instance, *rest):
         n = int(instance)
@@ -203,7 +218,7 @@ class fake_plugin_hostd:
         if members is None:
             return "resp -522"
         listed = ",".join(map(str, members)) or "-"
-        return f"resp 0 w1 {listed} {listed}"
+        return f"resp 0 {self.chain_worker(int(chain))} {listed} {listed}"
 
     def verb_chain_clear(self, chain):
         if self.chains.pop(int(chain), None) is None:
@@ -213,6 +228,8 @@ class fake_plugin_hostd:
     def verb_descriptor_get(self, uri):
         if uri not in self.descriptors:
             return "resp -529"
+        if self.descriptors[uri] is None:  # a scan that wrote nothing
+            return "resp -531"
         return f'resp 0 "{self.descriptors[uri]}"'
 
     def verb_state_save(self, directory):
@@ -241,6 +258,7 @@ def main(argv):
         with open(os.environ["FAKE_HOSTD_DESCRIPTORS"]) as f:
             descriptors = json.load(f)
     daemon = fake_plugin_hostd(port, os.environ.get("FAKE_HOSTD_JOURNAL"), descriptors)
+    time.sleep(float(os.environ.get("FAKE_HOSTD_READY_DELAY", "0")))  # listening, not yet ready
     print("plugin-hostd ready!", flush=True)
     daemon.serve()
 
