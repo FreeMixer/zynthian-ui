@@ -42,11 +42,12 @@ SLOW_TIMEOUT = 30.0  # add, chain, state_save and state_load spawn or move worke
 START_TIMEOUT = 10.0
 DESCRIPTOR_WAIT = 5.0
 PROBE_TIMEOUT = 30.0
-# The worker rows whose chain is one JACK client, named like its head (measured with omx-clap-host 0.22.1:
-# a chain on the clap row is the one client effect_<head> with the chain's ports, a chain on the lv2-clap or
-# the lv2 row keeps a client per member). plugin-hostd declares the row, not the client, so this is the one
-# fact here that comes from a measurement; a row not listed keeps a client per member.
-ONE_CLIENT_ROWS = ("clap",)
+# The worker rows whose chain is one JACK client, named like its head (measured on a Pi 5 with plugin-hostd
+# 0.12.0 and omx-clap-host 0.22.1, jack_lsp on a private server: a chain on the clap row, and one on the
+# lv2-clap row, LV2 members included, is the one client effect_<head> with the chain's ports; a chain on the
+# lv2 row, run by mod-host, keeps a client per member). plugin-hostd declares the row, not the client, so
+# this is the one fact here that comes from a measurement; a row not listed keeps a client per member.
+ONE_CLIENT_ROWS = ("clap", "lv2-clap")
 STATE_FILE_RE = re.compile(r"^effect_(\d+)(?=\D|$)")
 
 # The reply codes and the readiness line are plugin-hostd's own declaration, never retyped here

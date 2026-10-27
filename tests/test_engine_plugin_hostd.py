@@ -447,16 +447,16 @@ class test_chain_jack_names(plugin_hostd_case):
         for out in chain.get_audio_out():
             self.assertEqual(chain.audio_routes[out], ["effect_1000"], "the chain's output is the client's")
 
-    def test_a_mixed_lv2_and_clap_chain_keeps_a_client_per_member(self):
+    def test_a_mixed_lv2_and_clap_chain_is_one_client_named_for_its_head(self):
         fake = self.serve()
         chain = self.chain()
         a, b = self.add(chain, "PH/Amp"), self.add(chain, self.CLAP)
         self.assertEqual(fake.chains[1], (1000, 1001))
         self.assertIn(":lv2-clap:up:chain:1:1000,1001", fake.verb_worker_list())
-        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
-        self.assertEqual(chain.audio_routes["effect_1001"], ["effect_1000"])
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1000"))
+        self.assertNotIn("effect_1001", {name for dst, src in chain.audio_routes.items() for name in [dst] + src})
         for out in chain.get_audio_out():
-            self.assertEqual(chain.audio_routes[out], ["effect_1001"])
+            self.assertEqual(chain.audio_routes[out], ["effect_1000"])
 
     def test_a_chain_of_lv2_members_keeps_a_client_per_member(self):
         self.serve()
