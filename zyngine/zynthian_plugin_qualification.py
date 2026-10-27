@@ -2,8 +2,9 @@
 # ******************************************************************************
 # ZYNTHIAN PROJECT: plugin qualification (zynthian_plugin_qualification)
 #
-# What plugin-qualify found about each plugin, for the plugin menus: the measurement documents it
-# writes in qualification_dir (lv2-plugin-measurements, format 1.x) and the verdict word of each
+# What plugin-qualify found about each plugin, for the plugin menus: the files in qualification_dir
+# (the measurement documents, lv2-plugin-measurements format 1.x, and the per-plugin records
+# plugin-qualify-sync writes, plugin-qualify.qualification-record/1) and the verdict word of each
 # pin line (pin_set <uri> <files> <layout> verdict=<word>). A plugin with neither is simply not
 # qualified yet. Nothing here makes up a figure the files do not hold.
 #
@@ -20,10 +21,14 @@ import logging
 from collections import namedtuple
 
 DOCUMENT_FORMAT = "lv2-plugin-measurements"
+RECORD_SCHEMA = "plugin-qualify.qualification-record/1"
 PIN_VERDICTS = ("in-process", "isolated", "refused")  # plugin-hostd's PHD_PIN_VERDICTS
 CRASH_CODES = ("hosting.stability.crashed-attributed-plugin", "hosting.stability.crashed-live-on-this-rig",
                "hosting.stability.crash-unattributed")
 UNSOAKED_CODE = "hosting.stability.unsoaked"
+PROBE_OK = "probe.ok"
+PROBE_CRASHED = "probe.crashed"
+PROBE_TIMEOUT = "probe.timeout"
 DIMENSIONS = ("latency", "cost", "stability", "rtSafety", "features")
 
 # One plugin as the menus see it. record: a measurement document holds it. pin: its pin verdict word
@@ -77,9 +82,66 @@ def read_pins(paths):
     return pins
 
 
+def record_key(rec):
+    """What the menus and the pins call a record's plugin: the LV2 uri, or clap:<path>#<id> for a CLAP
+    file, since DPF-built files share one CLAP id. None when the record does not say."""
+    plugin, binary = rec.get("plugin"), rec.get("binary")
+    if not isinstance(plugin, dict) or not plugin.get("id"):
+        return None
+    if plugin.get("format") == "clap":
+        path = binary.get("path") if isinstance(binary, dict) else None
+        return f"clap:{path}#{plugin['id']}" if path else None
+    return plugin["id"]
+
+
+def record_entry(rec):
+    """(measuredAt, plugin, verdicts) of a qualification record in the shape of a measurement document's
+    plugin, from the figures the record holds: the latency each rate measured, the interposer's
+    counts over the grid, whether the soak was left unmeasured, and a run that crashed or timed out.
+    None when the record holds no figure and no crash or timeout: it says nothing about the plugin."""
+    grid = rec.get("measurements", {}).get("grid", [])
+    ok = [p for p in grid if isinstance(p, dict) and p.get("outcome") == PROBE_OK]
+    outcome = rec.get("probe", {}).get("outcome")
+    if not ok and outcome not in (PROBE_CRASHED, PROBE_TIMEOUT):
+        return None
+    plugin = {}
+    per_rate = {}
+    for p in ok:
+        lat = p.get("latency")
+        if isinstance(lat, dict) and isinstance(lat.get("measuredFrames"), (int, float)) and isinstance(p.get("rate"), int):
+            per_rate.setdefault(str(p["rate"]), {"frames": lat["measuredFrames"]})
+    plugin["latency"] = {"perRate": per_rate}
+    points = [p["rtSafety"] for p in ok if isinstance(p.get("rtSafety"), dict)]
+    if points and all(r.get("interposer") is True for r in points):
+        counts = {}
+        for key, name in (("allocations", "allocationsInRun"), ("locks", "locksInRun"), ("syscalls", "syscallsInRun")):
+            values = [r.get(key) for r in points]
+            if all(isinstance(v, (int, float)) for v in values):
+                counts[name] = sum(values)
+        plugin["rtSafety"] = {"interposer": True, "swept": all(r.get("swept") is True for r in points),
+                              "sweepApplicable": any(r.get("sweepApplicable") is True for r in points), **counts}
+    stability = {}
+    if any(n.get("code") == UNSOAKED_CODE for n in rec.get("notMeasured", []) if isinstance(n, dict)):
+        stability["unmeasuredReason"] = "unsoaked"
+    if outcome == PROBE_CRASHED:
+        stability["crashes"] = [PROBE_CRASHED]
+    if stability:
+        plugin["stability"] = stability
+    if outcome == PROBE_TIMEOUT:
+        plugin["latency"]["unmeasuredReason"] = "probe-timeout"
+    verdicts = [v for v in rec.get("verdicts", []) if isinstance(v, dict)]
+    return str(rec.get("measuredAt", "")), plugin, verdicts
+
+
 def read_documents(path):
-    """{uri: (measuredAt, plugin, [verdicts])}, the latest run of each plugin winning."""
+    """{key: (measuredAt, plugin, [verdicts])} of both formats in path, the latest run of each plugin
+    winning: the measurement documents by LV2 uri, the qualification records by record_key."""
     found = {}
+
+    def keep(key, when, plugin, verdicts):
+        if key and (key not in found or found[key][0] <= when):
+            found[key] = (when, plugin, verdicts)
+
     for top, dirs, names in os.walk(path):
         dirs.sort()
         for name in sorted(n for n in names if n.endswith(".json")):
@@ -90,7 +152,14 @@ def read_documents(path):
             except (OSError, ValueError) as e:
                 logging.warning(f"Can't read qualification file {fpath} => {e}")
                 continue
-            if not isinstance(doc, dict) or doc.get("format") != DOCUMENT_FORMAT:
+            if not isinstance(doc, dict):
+                continue
+            if doc.get("schema") == RECORD_SCHEMA:
+                entry = record_entry(doc)
+                if entry:
+                    keep(record_key(doc), *entry)
+                continue
+            if doc.get("format") != DOCUMENT_FORMAT:
                 continue
             when = str(doc.get("run", {}).get("measuredAt", ""))
             verdicts = {}
@@ -98,8 +167,7 @@ def read_documents(path):
                 verdicts.setdefault(v.get("uri"), []).append(v)
             for plugin in doc.get("plugins", []):
                 uri = plugin.get("uri")
-                if uri and (uri not in found or found[uri][0] <= when):
-                    found[uri] = (when, plugin, verdicts.get(uri, []))
+                keep(uri, when, plugin, verdicts.get(uri, []))
     return found
 
 
