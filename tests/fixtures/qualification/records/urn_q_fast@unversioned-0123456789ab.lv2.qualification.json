@@ -1,0 +1,5 @@
+{
+ "schema": "plugin-qualify.qualification-record/1",
+ "plugin": {"format": "lv2", "id": "urn:q:fast"},
+ "verdicts": [{"host": "mod-host", "measured": true, "rating": "unsuitable", "qualified": false, "hosting": "isolated", "reasons": []}]
+}

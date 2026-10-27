@@ -34,6 +34,7 @@ from zyngine import zynthian_lv2
 from zyngine.zynthian_chain import *
 from zyngine.zynthian_engine_jalv import *
 from zyngine.zynthian_engine_pianoteq import *
+from zyngine.zynthian_plugin_hostd_catalogue import add_catalogue as plugin_hostd_catalogue
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine.zynthian_processor import zynthian_processor
 from zyngine import zynthian_state_manager
@@ -82,7 +83,8 @@ engine2class = {
     "MR": zynthian_engine_audio_mixer,
     "MX": zynthian_engine_alsa_mixer,
     "TP": zynthian_engine_tempo,
-    'CL': zynthian_engine_clippy
+    'CL': zynthian_engine_clippy,
+    'PH': zynthian_engine_plugin_hostd
 }
 
 # ----------------------------------------------------------------------------
@@ -186,6 +188,8 @@ class zynthian_chain_manager:
             "ENGINE": zynthian_engine_tempo,
             "ENABLED": False
         }
+        # LV2 and CLAP plugins run by plugin-hostd
+        plugin_hostd_catalogue(cls.engine_info)
         # Look for an engine class for each one
         for key, info in cls.engine_info.items():
             try:
@@ -1427,6 +1431,10 @@ class zynthian_chain_manager:
             if eng_code[0:3] == "JV/":
                 eng_key = f"JV/{self.zyngine_counter}"
                 zyngine = zynthian_engine_class(eng_code, self.state_manager, False)
+            elif eng_code[0:3] == "PH/":
+                # One engine per processor, keyed by processor so a snapshot finds its state again
+                eng_key = f"PH#{processor.id}"
+                zyngine = zynthian_engine_class(eng_code, self.state_manager)
             elif eng_code in ("SF", "PD"):
                 eng_key = f"{eng_code}/{self.zyngine_counter}"
                 zyngine = zynthian_engine_class(self.state_manager)
@@ -1458,7 +1466,7 @@ class zynthian_chain_manager:
     def stop_unused_jalv_engines(self):
         """Stop JALV engines that are not used by any processors"""
         for eng_key in list(self.zyngines.keys()):
-            if len(self.zyngines[eng_key].processors) == 0 and eng_key[0:3] == "JV/":
+            if len(self.zyngines[eng_key].processors) == 0 and eng_key[0:3] in ("JV/", "PH#"):
                 logging.debug(f"Stopping Unused Jalv Engine '{eng_key}'...")
                 self.state_manager.set_busy_details(f"stopping engine {self.zyngines[eng_key].get_name()}")
                 self.zyngines[eng_key].stop()
@@ -1578,7 +1586,7 @@ class zynthian_chain_manager:
                         if proc_id == str(zynthian_state_manager.MAIN_MIXBUS_ID):
                             continue  # Do not replace main mixbus audio mixer processor
                         try:
-                            eng_config = engine_config[eng_code]
+                            eng_config = engine_config.get(f"PH#{proc_id}") or engine_config[eng_code]
                         except:
                             eng_config = None
                         # TODO: insert in correct slot, accounting for slot being relative to subchain type

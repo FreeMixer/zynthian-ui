@@ -29,6 +29,7 @@ import logging
 # Zynthian specific modules
 import zynautoconnect
 from zyngine.zynthian_processor import zynthian_processor
+from zyngine.zynthian_engine_plugin_hostd import sync_chain as plugin_hostd_sync_chain
 from zyncoder.zyncore import lib_zyncore
 
 
@@ -313,6 +314,9 @@ class zynthian_chain:
     def rebuild_audio_graph(self):
         """Build dictionary of lists of sources mapped by destination"""
 
+        # plugin-hostd runs this chain's plugins in one worker, in this order
+        plugin_hostd_sync_chain(self)
+
         # TODO: This is called too frequently
         if not zynautoconnect.acquire_lock():
             return
@@ -343,6 +347,8 @@ class zynthian_chain:
                 for jackname in sources:
                     if jackname.startswith("zynmixer"):
                         jackname = jackname.replace("output_", "input_")
+                    elif jackname in self.audio_routes:
+                        continue  # a later member of a worker's one jack client: the client is fed by its first
                     self.audio_routes[jackname] = prev_slot_sources.copy()
                 prev_slot_sources = sources
 
