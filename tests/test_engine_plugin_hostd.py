@@ -418,7 +418,7 @@ class test_chain(plugin_hostd_case):
 class test_chain_jack_names(plugin_hostd_case):
     """The members of a CLAP chain are one jack client; the processors name the client the daemon says."""
 
-    CLAP = "PH/clap:in.lsp-plug.limiter_mono"
+    CLAP = "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"
 
     def test_the_daemons_replies_name_the_chains_client(self):
         # The replies of the issue: three CLAP members added, chain 1 0 1 2, read back
