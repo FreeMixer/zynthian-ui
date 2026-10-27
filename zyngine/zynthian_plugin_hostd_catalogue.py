@@ -144,11 +144,13 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
         etype = next((t for f, t in CLAP_TYPES if f in plugin["features"]), None)
         if not etype:
             continue
-        key = f"PH/clap:{plugin['id']}"
+        # The pin URI names the file and the id: DPF-built files share one id
+        url = f"clap:{plugin['path']}#{plugin['id']}"
+        key = "PH/" + url
         clap_plugins[key] = plugin
-        added[key] = {"ID": "phc" + plugin["id"], "NAME": plugin["name"], "TITLE": f"{plugin['name']} (PH)",
+        added[key] = {"ID": "phc" + url, "NAME": plugin["name"], "TITLE": f"{plugin['name']} (PH)",
                       "TYPE": etype, "CAT": next((CLAP_CATS[f] for f in plugin["features"] if f in CLAP_CATS), "Other"),
-                      "ENABLED": available, "INDEX": 9999, "URL": f"clap:{plugin['path']}#{plugin['id']}", "UI": "",
+                      "ENABLED": available, "INDEX": 9999, "URL": url, "UI": "",
                       "DESCR": f"CLAP plugin by {plugin['vendor']}, run by plugin-hostd",
                       "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
     engines.update(added)

@@ -56,6 +56,13 @@ with open(os.path.join(FIXTURES, "omx-clap-scan.txt")) as _f:
     CLAP_SCAN = _f.read()
 
 
+CLAP_SCAN_MVERB = """  plugin studio.kx.distrho.MVerb "MVerb" vendor falkTX version 1.0
+    features audio-effect reverb stereo
+    in  main 2 channels unknown "in" in_1
+    out main 2 channels unknown "out" out_1
+"""
+
+
 def lv2_info(name, uri, etype="Audio Effect"):
     return {"ID": name, "NAME": name, "TITLE": name, "TYPE": etype, "CAT": "Other", "ENABLED": True, "INDEX": 0,
             "URL": uri, "UI": "", "DESCR": "", "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
@@ -316,7 +323,7 @@ class test_processor(plugin_hostd_case):
 
     def test_presets_are_listed_and_loaded(self):
         fake = self.serve()
-        proc = self.add(self.chain(), "PH/clap:org.test.synth")
+        proc = self.add(self.chain(), "PH/clap:/usr/lib/clap/test.clap#org.test.synth")
         presets = proc.engine.get_preset_list(proc.engine.get_bank_list()[0], proc)
         self.assertEqual([(p[0], p[2]) for p in presets], [("factory:warm", "Warm Pad"), ("factory:bright", "Bright Lead")])
         self.assertTrue(proc.engine.set_preset(proc, presets[0]))
@@ -443,7 +450,7 @@ class test_pages(plugin_hostd_case):
         self.assertEqual(proc.engine._ctrl_screens[2][1], ["p8", "p9"])
         self.assertEqual(len([r for r in logs.output if "omx-panel" in r]), 1)
 
-    SYNTH = "PH/clap:org.test.synth"
+    SYNTH = "PH/clap:/usr/lib/clap/test.clap#org.test.synth"
     SYNTH_URI = "clap:/usr/lib/clap/test.clap#org.test.synth"
 
     def probe_stub(self, fail=False):
@@ -550,6 +557,17 @@ class test_snapshot(plugin_hostd_case):
 
 class test_catalogue(plugin_hostd_case):
 
+    def test_clap_files_that_share_a_plugin_id_are_separate_entries(self):
+        # DPF-built files report one id for several files; the pin URI names the file too
+        scan = "".join(f'file /usr/lib/clap/{f}.clap\n' + CLAP_SCAN_MVERB for f in ("3BandEQ", "3BandSplitter"))
+        added = cat.add_catalogue({}, clap=cat.parse_clap_scan(scan), binary=FAKE)
+        self.assertEqual(sorted(added), ["PH/clap:/usr/lib/clap/3BandEQ.clap#studio.kx.distrho.MVerb",
+                                         "PH/clap:/usr/lib/clap/3BandSplitter.clap#studio.kx.distrho.MVerb"])
+        self.assertEqual(len({info["ID"] for info in added.values()}), 2)
+        for key, info in added.items():
+            self.assertEqual(key, "PH/" + info["URL"])
+            self.assertEqual(cat.clap_plugins[key]["path"], info["URL"].split("#")[0][5:])
+
     def test_clap_scan_text_is_parsed(self):
         plugins = cat.parse_clap_scan(CLAP_SCAN)
         self.assertEqual([p["id"] for p in plugins], ["in.lsp-plug.limiter_mono", "org.test.synth", "org.test.arp"])
@@ -567,13 +585,13 @@ class test_catalogue(plugin_hostd_case):
         added = cat.add_catalogue(engines, clap=cat.parse_clap_scan(CLAP_SCAN), binary=FAKE)
         self.assertNotIn("PH/clap:org.test.gone", engines, "a plugin no longer installed leaves the catalogue")
         self.assertNotIn("PH/clap:org.test.gone", _lv2.engines_by_type["Audio Effect"])
-        self.assertEqual(sorted(added), ["PH/ZamComp", "PH/clap:in.lsp-plug.limiter_mono", "PH/clap:org.test.synth"])
+        self.assertEqual(sorted(added), ["PH/ZamComp", "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono", "PH/clap:/usr/lib/clap/test.clap#org.test.synth"])
         self.assertEqual(added["PH/ZamComp"]["URL"], "urn:zamaudio:ZamComp")
-        synth = added["PH/clap:org.test.synth"]
+        synth = added["PH/clap:/usr/lib/clap/test.clap#org.test.synth"]
         self.assertEqual((synth["TYPE"], synth["CAT"], synth["URL"], synth["ENABLED"]),
                          ("MIDI Synth", "Synth", "clap:/usr/lib/clap/test.clap#org.test.synth", True))
-        self.assertEqual(added["PH/clap:in.lsp-plug.limiter_mono"]["CAT"], "Dynamics")
-        self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:org.test.synth"], synth)
+        self.assertEqual(added["PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"]["CAT"], "Dynamics")
+        self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:/usr/lib/clap/test.clap#org.test.synth"], synth)
         self.assertTrue(set(added) <= set(engines))
 
     def test_without_the_daemon_installed_the_entries_are_disabled(self):
