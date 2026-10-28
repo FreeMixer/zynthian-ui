@@ -951,14 +951,11 @@ class test_catalogue(plugin_hostd_case):
         self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:/usr/lib/clap/test.clap#org.test.synth"], synth)
         self.assertTrue(set(added) <= set(engines))
 
-    def test_unless_plugin_hostd_is_the_plugin_engine_the_menus_are_left_as_they_were(self):
+    def test_with_jalv_as_the_plugin_engine_the_menus_are_left_as_they_were(self):
         _lv2.engines_by_type["Audio Effect"]["JV/ZamComp"] = jalv = lv2_info("ZamComp", "urn:zamaudio:ZamComp")
         engines = {"JV/ZamComp": jalv}
-        for setting in (None, "jalv"):
-            with mock.patch.dict(os.environ):
-                os.environ.pop("ZYNTHIAN_PLUGIN_ENGINE")
-                if setting:
-                    os.environ["ZYNTHIAN_PLUGIN_ENGINE"] = setting
+        for setting in ("jalv",):
+            with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_ENGINE": setting}):
                 added = cat.add_catalogue(engines, clap=cat.parse_clap_scan(CLAP_SCAN), binary=FAKE)
             self.assertIn("PH/ZamComp", engines, "a chain saved with a PH entry still loads")
             self.assertEqual(_lv2.engines_by_type, {"MIDI Synth": {}, "Audio Effect": {"JV/ZamComp": jalv}}, setting)

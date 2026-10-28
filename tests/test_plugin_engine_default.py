@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
-# ZYNTHIAN_PLUGIN_ENGINE: jalv, the default, leaves the menus as they were; plugin-hostd offers the LV2
-# plugins through plugin-hostd. Runs with plain `python3 -m unittest`; zynthian_lv2 is a stand-in.
+# plugin-hostd as the engine the menus offer LV2 plugins through, and ZYNTHIAN_PLUGIN_ENGINE=jalv
+# to switch back. Runs with plain `python3 -m unittest`; zynthian_lv2 is a stand-in.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -65,12 +65,13 @@ class plugin_engine_case(unittest.TestCase):
     def menu(self, etype):
         return sorted(self.by_type[etype])
 
-    def test_by_default_the_menus_are_left_as_they_were(self):
+    def test_by_default_the_menus_offer_lv2_plugins_through_plugin_hostd(self):
         self.catalogue(None)
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
-        self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "ZY"])
-        # The PH entries are known, so a chain saved with one still loads
-        self.assertIn("PH/ZamComp", self.engines)
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
+        self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"])
+        # The jalv entries stay known, so a chain saved with one still loads
+        self.assertIn("JV/ZamComp", self.engines)
+        self.assertIn("JV/Surge", self.engines)
 
     def test_plugin_hostd_offers_lv2_plugins_through_plugin_hostd(self):
         self.catalogue()
@@ -92,7 +93,7 @@ class plugin_engine_case(unittest.TestCase):
     def test_an_unknown_setting_is_reported_and_the_default_used(self):
         with self.assertLogs(level=logging.WARNING) as logs:
             self.catalogue("carla")
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
         self.assertIn("ZYNTHIAN_PLUGIN_ENGINE=carla", logs.output[0])
 
     def test_without_plugin_hostd_installed_the_menus_keep_jalv(self):
@@ -114,6 +115,17 @@ class plugin_engine_case(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": pins, "ZYNTHIAN_PLUGIN_ENGINE": "plugin-hostd"}):
             cat.add_catalogue(self.engines, clap=[], binary=self.binary)
         self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "ZY"])
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
+
+    def test_an_isolated_plugin_is_offered_through_plugin_hostd(self):
+        # isolated: not real-time safe, so a worker of its own; it still runs in plugin-hostd. Only an
+        # unsuitable plugin (crashed, hung or failed to load: its pin verdict is refused) stays on jalv.
+        pins = os.path.join(os.path.dirname(self.binary), "qualified.pins")
+        with open(pins, "w") as f:
+            f.write("pin_set urn:zamaudio:ZamComp z.so=00 omx-layout/1:00 verdict=isolated\n")
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": pins}):
+            os.environ.pop("ZYNTHIAN_PLUGIN_ENGINE", None)
+            cat.add_catalogue(self.engines, clap=[], binary=self.binary)
         self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
 
     def test_midi_tools_stay_with_jalv(self):

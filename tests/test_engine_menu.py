@@ -133,7 +133,7 @@ class engine_menu(unittest.TestCase):
         self.assertEqual([row[2] for row in self.screen.filled], ["Linear EQ (PH)", "Fast Comp (PH)", "Refused Amp (PH)"])
 
     def test_with_jalv_as_the_plugin_engine_the_menu_is_left_as_it_was(self):
-        for setting in ("jalv", ""):
+        for setting in ("jalv",):
             os.environ["ZYNTHIAN_PLUGIN_ENGINE"] = setting
             self.screen.get_engines_by_cat()
             self.screen.fill_list()

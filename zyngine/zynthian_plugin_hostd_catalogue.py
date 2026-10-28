@@ -20,7 +20,7 @@ import logging
 ENGINE_TYPES = ("MIDI Synth", "Audio Effect")
 PLUGIN_ENGINES = ("plugin-hostd", "jalv")
 # What the menus offer LV2 plugins through when ZYNTHIAN_PLUGIN_ENGINE is unset
-DEFAULT_PLUGIN_ENGINE = "jalv"
+DEFAULT_PLUGIN_ENGINE = "plugin-hostd"
 # CLAP features: the engine type a plugin takes, then its category
 CLAP_TYPES = (("instrument", "MIDI Synth"), ("audio-effect", "Audio Effect"))
 CLAP_CATS = {

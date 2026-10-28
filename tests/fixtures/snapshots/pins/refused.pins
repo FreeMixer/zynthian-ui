@@ -1,0 +1,2 @@
+pin_set urn:zamaudio:ZamComp ZamComp.so=6666666666666666666666666666666666666666666666666666666666666666 omx-layout/1:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff verdict=refused
+pin_set https://surge-synthesizer.github.io/lv2/surge-xt surge.so=7777777777777777777777777777777777777777777777777777777777777777 omx-layout/1:9999999999999999999999999999999999999999999999999999999999999999 verdict=isolated
