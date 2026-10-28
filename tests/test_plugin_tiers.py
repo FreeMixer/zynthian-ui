@@ -63,7 +63,7 @@ RULES = [
     ("slow, under a raised threshold", measured(8.0, rt=True, soaked=True, frames=384), 10, "live",
      "live · 384 fr · RT clean · cost unknown", False),
     ("alloc in callback", measured(0.0, rt=False, soaked=True, frames=0, declared=0), 5, "studio",
-     "studio · 0/0 fr · RT violations · cost unknown", False),
+     "studio · 0/0 fr · runs alone · cost unknown", False),
     ("soak unmeasured", measured(1.333, rt=True, soaked=False, frames=64), 5, "live",
      "live · 64 fr · RT clean · cost unknown · unsoaked", False),
     ("no latency figure", measured(None, rt=True, soaked=True), 5, "studio", "studio · latency unknown · RT clean · cost unknown", False),
@@ -158,7 +158,7 @@ class fact_readers(unittest.TestCase):
 FIXTURE_TAGS = {
     "urn:q:fast": ("live · 0 fr · RT clean · cost unknown", "live · latency unknown · RT clean · cost unknown"),
     "urn:q:slow": ("studio · 1024 fr · RT clean · cost unknown", "studio · latency unknown · RT clean · cost unknown"),
-    "urn:q:alloc": ("studio · 0 fr · RT violations · cost unknown", "studio · latency unknown · RT violations · cost unknown"),
+    "urn:q:alloc": ("studio · 0 fr · runs alone · cost unknown", "studio · latency unknown · runs alone · cost unknown"),
     "urn:q:refused": ("hidden · refused", "hidden · refused"),
     "urn:q:crashed": ("hidden · crashed", "hidden · crashed"),
     "urn:q:hung": ("hidden · hung", "hidden · hung"),
@@ -387,7 +387,7 @@ class menu_order(unittest.TestCase):
             ("PH/Unsoaked", "New Gate (PH)  live · 64 fr · RT clean · cost unknown · unsoaked", False),
             ("JV/Fast", "Fast Comp  live · 0 fr · RT clean · cost unknown", False),
             ("PH/Slow", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown", False),
-            ("PH/Alloc", "Alloc Verb (PH)  studio · 0 fr · RT violations · cost unknown", False),
+            ("PH/Alloc", "Alloc Verb (PH)  studio · 0 fr · runs alone · cost unknown", False),
             ("PH/None", "Untested Chorus (PH)  not qualified", False),
             ("AP", "Audio Player", False),
         ])

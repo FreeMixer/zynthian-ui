@@ -19,7 +19,9 @@
 # <figures> are the record's, as it holds them, at the current rate and quantum:
 #   latency  64/0 fr          measured/declared frames, 64 fr when the record declares none; latency unknown
 #   RT       RT clean         no allocation, lock, syscall or thread violation under the sweep;
-#                             RT violations: some; RT unmeasured: no interposer count, or not swept
+#                             runs alone: some, so plugin-hostd isolates it in its own worker, never
+#                             grouped with RT-safe plugins (it is not refused); RT unmeasured: no
+#                             interposer count, or not swept
 #   cost     19.4 ns/smp      the median ns per sample measured at this rate and quantum; cost unknown
 #
 # live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
@@ -48,7 +50,7 @@ LIVE_MAX_MS = 5.0
 RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "refused": 3, "hidden": 4}  # entries that are not plugins rank as unverified
 SEP = " · "
 ORDERS = ("tier", "name", "cost", "latency", "rt")
-RT_WORDS = {True: "RT clean", False: "RT violations", None: "RT unmeasured"}
+RT_WORDS = {True: "RT clean", False: "runs alone", None: "RT unmeasured"}
 
 Placement = namedtuple("Placement", "tier tag hidden reason")
 
