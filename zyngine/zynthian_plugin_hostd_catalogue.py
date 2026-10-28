@@ -118,13 +118,26 @@ def jalv_twin(key):
     return None if key.startswith("PH/clap:") or not key.startswith("PH/") else "JV/" + key[3:]
 
 
-def add_catalogue(engines, clap=None, binary="plugin-hostd"):
+def refused_plugins():
+    """The uris plugin-hostd's pins refuse: the daemon turns their add away, jalv still runs them."""
+    try:
+        from zyngine import zynthian_plugin_qualification as qualification
+    except ImportError:
+        return set()
+    return {uri for uri, verdict in qualification.read_pins(qualification.pin_paths()).items() if verdict == "refused"}
+
+
+def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
     """Add a PH entry for each LV2 instrument and effect in engines and each CLAP one omx-clap-scan
     finds, to engines and to zynthian_lv2's lists by type. They are enabled when plugin-hostd is
     installed; an LV2 one only when its jalv entry is enabled too.
     With plugin-hostd as the plugin engine, the menus list the PH entry and not its jalv one; the jalv
-    entry stays in engines, so a chain that still holds it loads as it was saved."""
+    entry stays in engines, so a chain that still holds it loads as it was saved. A plugin plugin-hostd
+    refuses (refused: its uris, by default the ones its pins refuse) keeps its jalv entry in the menu
+    and its PH entry out of it."""
     available = shutil.which(binary) is not None
+    if refused is None:
+        refused = refused_plugins()
     try:
         from zyngine import zynthian_lv2
         by_type = zynthian_lv2.engines_by_type or {}
@@ -159,9 +172,12 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
         logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: the menus offer jalv")
     for key, info in added.items():
         if info["TYPE"] in by_type:
+            twin = jalv_twin(key)
+            if by_ph and available and twin and info.get("URL") in refused:
+                continue  # jalv runs what plugin-hostd refuses: its row stays, the PH one stays out
             by_type[info["TYPE"]][key] = info
-            if by_ph and available and jalv_twin(key):
-                by_type[info["TYPE"]].pop(jalv_twin(key), None)
+            if by_ph and available and twin:
+                by_type[info["TYPE"]].pop(twin, None)
     return added
 
 

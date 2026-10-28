@@ -47,9 +47,34 @@ def qualification_dir():
     return setting("ZYNTHIAN_QUALIFICATION_DIR", setting("OMX_QUALIFICATION_DIR", "/var/lib/omx/qualification"))
 
 
+PINS_DIR = "/usr/share/plugin-hostd/pins.d"
+
+
+def conf_pin_file():
+    """The pin_file of plugin-hostd's config, where the qualification sync writes its verdicts and the daemon
+    reads them: ZYNTHIAN_PLUGIN_HOSTD_CONF, else plugin-hostd.conf in the config dir, as the PH engine
+    finds it. None when the file or the key is absent."""
+    conf = setting("ZYNTHIAN_PLUGIN_HOSTD_CONF",
+                   os.path.join(setting("ZYNTHIAN_CONFIG_DIR", "/zynthian/config"), "plugin-hostd.conf"))
+    try:
+        with open(conf) as f:
+            for line in f:
+                words = line.split()
+                if len(words) >= 2 and words[0] == "pin_file":
+                    return words[1]
+    except OSError:
+        pass
+    return None
+
+
 def pin_paths():
-    """ZYNTHIAN_QUALIFICATION_PINS: pin files or directories of *.pins, ':' between them."""
-    return [p for p in setting("ZYNTHIAN_QUALIFICATION_PINS", "/usr/share/plugin-hostd/pins.d").split(":") if p]
+    """ZYNTHIAN_QUALIFICATION_PINS: pin files or directories of *.pins, ':' between them. Unset, the pins
+    plugin-hostd reads: its package's pins.d and the pin_file of its config."""
+    paths = setting("ZYNTHIAN_QUALIFICATION_PINS", "")
+    if paths:
+        return [p for p in paths.split(":") if p]
+    pin_file = conf_pin_file()
+    return [PINS_DIR] + ([pin_file] if pin_file else [])
 
 
 # ---- Reading ----

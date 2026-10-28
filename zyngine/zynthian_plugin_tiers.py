@@ -8,6 +8,7 @@
 #   pin / found                 RT-safe  worst latency  soak       tier        tag                       hidden
 #   no record                   -        -              -          unverified  unverified                no
 #   verdict=refused             any      any            any        -           hidden · refused          yes
+#   verdict=refused, jalv row   any      any            any        refused     refused                   no
 #   crashed in qualification    any      any            any        -           hidden · crashed          yes
 #   hung in qualification       any      any            any        -           hidden · hung             yes
 #   measured                    yes      <= live ms     soaked     live        live · 1.2 ms · RT        no
@@ -20,7 +21,8 @@
 # live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
 # plugin between tiers; the tag shows the latency at the current rate. A figure the record does not
-# hold is left out of the tag, never guessed. Hidden ones are listed last, greyed, when
+# hold is left out of the tag, never guessed. A refused plugin's jalv row (JV/) is listed, since jalv runs what
+# plugin-hostd refuses: after the qualified ones, tagged refused. Hidden ones are listed last, greyed, when
 # ZYNTHIAN_PLUGIN_SHOW_HIDDEN=1.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
@@ -35,7 +37,7 @@ import logging
 from collections import namedtuple
 
 LIVE_MAX_MS = 5.0
-RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "hidden": 3}  # entries that are not plugins rank as unverified
+RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "refused": 3, "hidden": 4}  # entries that are not plugins rank as unverified
 SEP = " · "
 
 Placement = namedtuple("Placement", "tier tag hidden reason")
@@ -82,7 +84,8 @@ def is_plugin(key):
 
 def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, show=False):
     """[(key, text, greyed)] of one menu's engines {key: info}, live first, then studio, then the
-    rest in their own order; hidden ones dropped, or last and greyed when show is set.
+    rest in their own order, then the jalv rows of the plugins plugin-hostd refuses, tagged refused;
+    hidden ones dropped, or last and greyed when show is set.
     facts_of(url) gives a plugin's Facts; entries that are not plugins keep their title."""
     rows = []
     for n, (key, info) in enumerate(engines.items()):
@@ -90,6 +93,9 @@ def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, show=False):
             rows.append((RANK[None], n, key, info["TITLE"], False))
             continue
         p = place(facts_of(info.get("URL", "")), live_ms)
+        if p.reason == "refused" and key.startswith("JV/"):
+            rows.append((RANK["refused"], n, key, f"{info['TITLE']}  refused", False))
+            continue
         if p.hidden and not show:
             continue
         tier = "hidden" if p.hidden else p.tier
