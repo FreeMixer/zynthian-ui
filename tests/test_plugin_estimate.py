@@ -43,7 +43,7 @@ class estimate_footer(plugin_hostd_case):
         self.serve(estimator=True)
         e = self.estimator()
         e.request("k", 96000, 128, ["urn:test:amp", "urn:test:big"])
-        self.assertEqual(wait_for(e)[1], "chain: +0 fr latency, 1.5 % CPU, 4.0 MB, 1 workers, 1 unknown")
+        self.assertEqual(wait_for(e)[1], "chain: +0 fr latency, 1.5 % CPU, RAM unknown, 1 workers, 1 unknown (member 2: no record)")
 
     def test_a_daemon_without_the_verb_says_unavailable_once_and_is_not_asked_again(self):
         fake = self.serve()

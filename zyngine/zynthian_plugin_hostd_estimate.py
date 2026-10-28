@@ -24,23 +24,37 @@ class estimate_unavailable(Exception):
     """The daemon has no estimate verb (a plugin-hostd older than the one that brought it)."""
 
 
+# The reason of a member the records cannot answer for, by the code plugin-hostd gives it in the list
+REASONS = {-533: "no record", -534: "no grid point at this rate and quantum", -535: "not installed"}
+
+
 def parse(text):
-    """The reply after 'resp 0': the first line holds the five figures, continuation lines are not read.
-    {'latency': frames, 'cpu': percent, 'ram': bytes, 'workers': n, 'unknown': n}; ValueError if it does not."""
-    words = (text.strip().splitlines() or [""])[0].split()
-    if len(words) < 5:
-        raise ValueError(f"estimate reply '{text[:64]}' has fewer than five figures")
-    latency, cpu, ram, workers, unknown = words[:5]
-    return {"latency": int(float(latency)), "cpu": float(cpu), "ram": int(float(ram)),
-            "workers": int(workers), "unknown": int(unknown)}
+    """The reply after 'resp 0': one line, 'latency cpu ram workers unknown list'. ram is '-' (None) unless
+    every member has a figure; list is '-' or '<member>:<code>,...' with members counted from 0.
+    {'latency', 'cpu', 'ram', 'workers', 'unknown', 'members': {index: code}}; ValueError if it is not that."""
+    words = text.split()
+    if len(words) < 6:
+        raise ValueError(f"estimate reply '{text[:64]}' has fewer than six fields")
+    latency, cpu, ram, workers, unknown, listed = words[:6]
+    members = {}
+    if listed != "-":
+        for item in listed.split(","):
+            index, _, code = item.partition(":")
+            members[int(index)] = int(code)
+    return {"latency": int(float(latency)), "cpu": float(cpu), "ram": None if ram == "-" else int(float(ram)),
+            "workers": int(workers), "unknown": int(unknown), "members": members}
 
 
 def footer(est):
-    """'chain: +64 fr latency, 12.5 % CPU, 48.0 MB, 2 workers[, 3 unknown]'"""
-    text = "chain: +%d fr latency, %.1f %% CPU, %.1f MB, %d workers" % (
-        est["latency"], est["cpu"], est["ram"] / 1e6, est["workers"])
+    """'chain: +64 fr latency, 12.5 % CPU, 48.0 MB, 2 workers[, 2 unknown (member 2: no record, ...)]';
+    'RAM unknown' where the daemon gives none. Members are counted from 1 here."""
+    ram = "RAM unknown" if est["ram"] is None else "%.1f MB" % (est["ram"] / 1e6)
+    text = "chain: +%d fr latency, %.1f %% CPU, %s, %d workers" % (est["latency"], est["cpu"], ram, est["workers"])
     if est["unknown"]:
         text += ", %d unknown" % est["unknown"]
+        if est["members"]:
+            text += " (" + ", ".join(f"member {i + 1}: {REASONS.get(c, 'code %d' % c)}"
+                                     for i, c in sorted(est["members"].items())) + ")"
     return text
 
 

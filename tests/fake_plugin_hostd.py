@@ -155,10 +155,12 @@ class fake_plugin_hostd:
         plugin without a record counts as unknown and adds nothing."""
         if not refs:
             return "resp -902"
-        known = [self.ESTIMATES[r] for r in refs if r in self.ESTIMATES]
-        return "resp 0 %d %.2f %d 1 %d\n%s" % (sum(k[0] for k in known), sum(k[1] for k in known),
-                                                 sum(k[2] for k in known), len(refs) - len(known),
-                                                 "\n".join(f"{r} rate={rate} quantum={quantum}" for r in refs))
+        known = [self.ESTIMATES.get(r) for r in refs]
+        have = [k for k in known if k]
+        lost = ",".join(f"{i}:-533" for i, k in enumerate(known) if not k) or "-"
+        ram = str(sum(k[2] for k in have)) if len(have) == len(refs) else "-"
+        return "resp 0 %d %.2f %s 1 %d %s" % (sum(k[0] for k in have), sum(k[1] for k in have), ram,
+                                              len(refs) - len(have), lost)
 
     def verb_plan(self, chain, *members):
         """The planner of plugin-hostd 0.13, reduced to what the pin verdicts and group_max decide: a member
