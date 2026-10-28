@@ -31,6 +31,8 @@ from time import sleep
 from zyngine import *
 from zyngine import zynthian_lv2
 from zyngine import zynthian_plugin_hostd_catalogue
+from zyngine import zynthian_plugin_qualification
+from zyngine import zynthian_plugin_tiers
 from zyngui import zynthian_gui_config
 from zyngui.zynthian_gui_base import zynthian_gui_base
 from zyngui.zynthian_gui_selector import zynthian_gui_selector
@@ -81,6 +83,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.info_canvas = None
         self.engine_info_dirty = False
         self.xswipe_sens = 10
+        self.qualification = zynthian_plugin_qualification.qualification()
+        self.menu_entries = {}
 
         super().__init__('Engine', True, False)
 
@@ -265,6 +269,10 @@ class zynthian_gui_engine(zynthian_gui_selector):
                 self.engines_by_cat["Other"].pop(exclude)
             except:
                 pass
+        # Each menu as qualification orders it; a category whose plugins are all hidden goes too
+        self.menu_entries = self.qualified_entries(self.engines_by_cat)
+        self.engines_by_cat = {cat: engines for cat, engines in self.engines_by_cat.items()
+                               if self.menu_entries[cat] or not engines}
         self.engine_cats = list(self.engines_by_cat.keys())
         self.cat_index = min(self.cat_index, len(self.engine_cats) - 1)
         # Fill category list
@@ -273,6 +281,27 @@ class zynthian_gui_engine(zynthian_gui_selector):
             self.listbox2.insert(tkinter.END, cat)
         self.listbox2.itemconfig(self.cat_index, {'bg': self.lb2_fg, 'fg': self.lb2_bg})
         # self.engines_by_cat = sorted(self.engines_by_cat.items(), key=lambda kv: "!" if kv[0] is None else kv[0])
+
+    def qualified_entries(self, engines_by_cat):
+        """{cat: [(engine, text, greyed)]}: the plugins tagged with their tier, live first, the hidden ones dropped
+        or greyed. Plain titles in their own order if the qualification can't be read, or if plugin-hostd is not
+        the plugin engine: the records describe plugin-hostd's runs."""
+        if zynthian_plugin_hostd_catalogue.plugin_engine() != "plugin-hostd":
+            return {cat: [(eng, info["TITLE"], False) for eng, info in engines.items()]
+                    for cat, engines in engines_by_cat.items()}
+        try:
+            rate = self.zyngui.state_manager.get_jackd_samplerate()
+        except Exception:
+            rate = None
+        try:
+            q = self.qualification.refresh()
+            live_ms, show = zynthian_plugin_tiers.live_max_ms(), zynthian_plugin_tiers.show_hidden()
+            return {cat: zynthian_plugin_tiers.menu_entries(engines, lambda url: q.facts(url, rate), live_ms, show)
+                    for cat, engines in engines_by_cat.items()}
+        except Exception as e:
+            logging.error(f"Can't read the plugin qualification => {e}")
+            return {cat: [(eng, info["TITLE"], False) for eng, info in engines.items()]
+                    for cat, engines in engines_by_cat.items()}
 
     def recall_context_index(self):
         try:
@@ -303,20 +332,23 @@ class zynthian_gui_engine(zynthian_gui_selector):
         if self.proc_type in ("MIDI Tool", "Audio Effect"):
             self.list_data.append(("None", 0, "None", "None"))
 
+        greyed = []
         if self.engine_cats:
             # Fill engine list
             cat = self.engine_cats[self.cat_index]
             engines_info = self.engines_by_cat[cat]
-            for eng in engines_info:
+            for eng, text, grey in self.menu_entries[cat]:
                 i = len(self.list_data)
                 info = engines_info[eng]
+                if grey:
+                    greyed.append(i)
                 if self.show_all:
                     if info["ENABLED"]:
-                        self.list_data.append((eng, i, "\u2612 " + info["TITLE"], info["NAME"]))
+                        self.list_data.append((eng, i, "\u2612 " + text, info["NAME"]))
                     else:
-                        self.list_data.append((eng, i, "\u2610 " + info["TITLE"], info["NAME"]))
+                        self.list_data.append((eng, i, "\u2610 " + text, info["NAME"]))
                 else:
-                    self.list_data.append((eng, i, info["TITLE"], info["NAME"]))
+                    self.list_data.append((eng, i, text, info["NAME"]))
 
         # Display help if no engines are enabled ...
         if len(self.list_data) == 0:
@@ -328,6 +360,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
             self.engine_info_dirty = False
 
         super().fill_list()
+        for i in greyed:
+            self.listbox.itemconfig(i, {'fg': zynthian_gui_config.color_tx_off})
 
     def select(self, index=None, set_zctrl=True):
         super().select(index, set_zctrl)
