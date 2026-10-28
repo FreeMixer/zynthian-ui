@@ -51,14 +51,17 @@ PROBE_TIMEOUT = 30.0
 ONE_CLIENT_ROWS = ("clap", "lv2-clap")
 STATE_FILE_RE = re.compile(r"^effect_(\d+)(?=\D|$)")
 
-# The reply codes and the readiness line are plugin-hostd's own declaration, never retyped here
-protocol = zynthian_plugin_hostd_protocol.protocol()
+# The reply codes and the readiness line are plugin-hostd's own declaration, never retyped here. They are read
+# once, here; without the files, or without a name below, the engine refuses to start and says which.
+CHAIN_FALLBACK_NAMES = ("PLACEMENT_INVALID", "CHAIN_DUPLICATE", "CHAIN_INSTANCE_BUSY", "CHAIN_MIXED_FORMAT")
+DESCRIPTOR_NONE_NAMES = ("DESCRIPTOR_ABSENT", "DESCRIPTOR_SCAN_FAILED")
+NEEDS = CHAIN_FALLBACK_NAMES + DESCRIPTOR_NONE_NAMES + (
+    "DESCRIPTOR_PENDING", "ERR_INSTANCE_ALREADY_EXISTS", "ERR_INVALID_OPERATION", "ERR_MEMORY_ALLOCATION")
+protocol = zynthian_plugin_hostd_protocol.protocol(needs=NEEDS)
 ERROR_NAMES = protocol.names
-CHAIN_FALLBACK_CODES = tuple(protocol.codes[n] for n in (
-    "PLACEMENT_INVALID", "CHAIN_DUPLICATE", "CHAIN_INSTANCE_BUSY", "CHAIN_MIXED_FORMAT")) if protocol.loaded else ()
+CHAIN_FALLBACK_CODES = tuple(protocol.codes[n] for n in CHAIN_FALLBACK_NAMES) if protocol.loaded else ()
 DESCRIPTOR_PENDING = protocol.codes.get("DESCRIPTOR_PENDING")
-DESCRIPTOR_NONE = tuple(protocol.codes[n] for n in ("DESCRIPTOR_ABSENT", "DESCRIPTOR_SCAN_FAILED")) \
-    if protocol.loaded else ()
+DESCRIPTOR_NONE = tuple(protocol.codes[n] for n in DESCRIPTOR_NONE_NAMES) if protocol.loaded else ()
 
 _logged = set()
 
@@ -166,8 +169,10 @@ class plugin_hostd_daemon:
             return False
 
     def ensure(self):
+        if not protocol.loaded:
+            raise plugin_hostd_down(protocol.failure)
         if not protocol.ready_line:
-            raise plugin_hostd_down("plugin-hostd's protocol.json is not installed: no declared readiness line")
+            raise plugin_hostd_down("plugin-hostd's protocol.json declares no readiness line")
         if self.identify():
             return
         binary = shutil.which(self.binary)

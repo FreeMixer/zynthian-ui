@@ -18,26 +18,26 @@ import json
 import logging
 
 PROTOCOL_DIR = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR", "/usr/share/plugin-hostd")
+FILES = ("protocol.json", "mod-host.json")
 
 
 def read(name, directory=None):
-    """The JSON file plugin-hostd installs under that name; {} and one warning when it is not there."""
+    """The JSON file plugin-hostd installs under that name; (contents, None), or ({}, why it is not there)."""
     path = os.path.join(directory or PROTOCOL_DIR, name)
     try:
         with open(path) as f:
-            return json.load(f)
+            return json.load(f), None
     except (OSError, ValueError) as e:
-        logging.warning("plugin-hostd protocol file %s is not readable (%s)", path, e)
-        return {}
+        return {}, f"plugin-hostd's protocol file {path} is not readable ({e})"
 
 
 class protocol:
-    """plugin-hostd's codes by name and by number, and its readiness line."""
+    """plugin-hostd's codes by name and by number and its readiness line, read once from both files.
+    needs: the names the caller branches on. A file that is missing or unreadable, or a name neither file
+    declares, leaves loaded False and failure saying which, logged once as an error here."""
 
-    def __init__(self, directory=None):
-        daemon = read("protocol.json", directory)
-        host = read("mod-host.json", directory)
-        self.loaded = bool(daemon.get("errors"))
+    def __init__(self, directory=None, needs=()):
+        (daemon, daemon_failure), (host, host_failure) = (read(name, directory) for name in FILES)
         self.codes = {}  # name => code
         self.names = {}  # code => name, the first name a code has
         # mod-host's codes, then the ones plugin-hostd adds
@@ -47,7 +47,14 @@ class protocol:
         for e in daemon.get("errors", []):
             self.codes[e["name"]] = e["code"]
             self.names[e["code"]] = e["macro"]
+        missing = [n for n in needs if n not in self.codes]
+        self.failure = daemon_failure or host_failure or (
+            f"plugin-hostd's protocol files in {directory or PROTOCOL_DIR} do not declare {', '.join(missing)}"
+            if missing else None)
+        self.loaded = self.failure is None
         self.ready_line = daemon.get("readiness", {}).get("daemon_line")
+        if self.failure:
+            logging.error("%s: the plugin-hostd engine will not start", self.failure)
 
     def code(self, name):
         """The number a name stands for; KeyError for a name the protocol does not declare."""

@@ -277,11 +277,49 @@ class test_protocol(plugin_hostd_case):
                          "a reply code in the engine's source is a retyped one")
 
     def test_without_the_protocol_files_there_is_no_daemon_to_trust(self):
-        empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"))
+        with self.assertLogs(level=logging.ERROR) as logs:
+            empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"), needs=ph.NEEDS)
         self.assertFalse(empty.loaded)
+        self.assertEqual(len(logs.records), 1, "said once, when the files are read")
+        self.assertIn(os.path.join(self.tmp, "none", "protocol.json"), logs.output[0])
         with mock.patch.object(ph, "protocol", empty):
-            with self.assertRaises(ph.plugin_hostd_down):
+            with self.assertRaises(ph.plugin_hostd_down) as down:
                 ph.daemon.ensure()
+        self.assertIn(os.path.join(self.tmp, "none", "protocol.json"), str(down.exception), "the refusal names the file")
+
+    def test_mod_host_json_missing_is_a_failure_too(self):
+        directory = self.declared()
+        os.remove(os.path.join(directory, "mod-host.json"))
+        with self.assertLogs(level=logging.ERROR):
+            p = ph.zynthian_plugin_hostd_protocol.protocol(directory)
+        self.assertFalse(p.loaded)
+        self.assertIn(os.path.join(directory, "mod-host.json"), p.failure)
+
+    def test_a_name_the_engine_branches_on_and_the_files_do_not_declare_is_a_failure(self):
+        declared = [{"name": n, "macro": "PHD_ERR_" + n, "code": -700 - i} for i, n in enumerate(ph.NEEDS)
+                    if n != "CHAIN_MIXED_FORMAT" and not n.startswith("ERR_")]
+        host = [{"name": n, "value": -800 - i} for i, n in enumerate(ph.NEEDS) if n.startswith("ERR_")]
+        with self.assertLogs(level=logging.ERROR):
+            p = ph.zynthian_plugin_hostd_protocol.protocol(self.declared(declared, host_errors=host), needs=ph.NEEDS)
+        self.assertFalse(p.loaded)
+        self.assertIn("do not declare CHAIN_MIXED_FORMAT", p.failure)
+        with mock.patch.object(ph, "protocol", p):
+            with self.assertRaises(ph.plugin_hostd_down) as down:
+                ph.daemon.ensure()
+        self.assertIn("CHAIN_MIXED_FORMAT", str(down.exception))
+
+    def test_the_engine_reads_the_files_once_at_import(self):
+        with mock.patch.object(ph.zynthian_plugin_hostd_protocol, "read", side_effect=AssertionError("read again")):
+            self.serve()
+            self.add(self.chain(), "PH/Amp")
+
+    @unittest.skipUnless(os.path.isfile("/usr/share/plugin-hostd/protocol.json"), "plugin-hostd is not installed")
+    def test_the_fixture_says_what_the_installed_files_say(self):
+        installed = ph.zynthian_plugin_hostd_protocol.protocol("/usr/share/plugin-hostd", needs=ph.NEEDS)
+        self.assertTrue(installed.loaded, installed.failure)
+        for name, code in ph.protocol.codes.items():
+            self.assertEqual(installed.codes.get(name), code, f"the fixture retypes {name}")
+        self.assertEqual(installed.ready_line, ph.protocol.ready_line)
 
     def test_ready_is_the_declared_line_not_a_port_that_answers(self):
         ph.daemon.binary = FAKE
