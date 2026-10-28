@@ -951,6 +951,50 @@ class test_catalogue(plugin_hostd_case):
         self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:/usr/lib/clap/test.clap#org.test.synth"], synth)
         self.assertTrue(set(added) <= set(engines))
 
+    def scanner(self, clap_dir):
+        """An omx-clap-scan on PATH that prints the fixture scan and counts its runs."""
+        runs = os.path.join(self.tmp, "scan-runs")
+        script = os.path.join(self.bin, "omx-clap-scan")
+        with open(script, "w") as f:
+            f.write(f"#!/bin/sh\necho \"$1\" >>{runs}\nexec {sys.executable} -c 'import sys; sys.stdout.write(open(sys.argv[1]).read())' "
+                    f"{os.path.join(FIXTURES, 'omx-clap-scan.txt')}\n")
+        os.chmod(script, 0o755)
+        os.environ["CLAP_PATH"] = clap_dir
+        return runs
+
+    def test_by_default_the_catalogue_offers_the_clap_plugins_omx_clap_scan_finds(self):
+        clap_dir = os.path.join(self.tmp, "clap")
+        os.mkdir(clap_dir)
+        runs = self.scanner(clap_dir)
+        with mock.patch.object(cat, "CONFIG_DIR", self.tmp), mock.patch.object(cat, "clap_dirs", lambda: [clap_dir]):
+            added = cat.add_catalogue({}, binary=FAKE)
+        self.assertIn("PH/clap:/usr/lib/clap/test.clap#org.test.synth", added)
+        self.assertIn("PH/clap:/usr/lib/clap/test.clap#org.test.synth", _lv2.engines_by_type["MIDI Synth"])
+        with open(runs) as f:
+            self.assertEqual(f.read().split(), [clap_dir])
+
+    def test_the_clap_scan_is_kept_until_a_directory_changes(self):
+        clap_dir = os.path.join(self.tmp, "clap")
+        os.mkdir(clap_dir)
+        runs = self.scanner(clap_dir)
+        cache = os.path.join(self.tmp, "clap.json")
+        with mock.patch.object(cat, "clap_dirs", lambda: [clap_dir]):
+            first = cat.scan_clap(cache)
+            self.assertEqual(cat.scan_clap(cache), first)
+            with open(runs) as f:
+                self.assertEqual(len(f.read().split()), 1, "the second load reads the cache")
+            os.utime(clap_dir, (1, 1))
+            cat.scan_clap(cache)
+            with open(runs) as f:
+                self.assertEqual(len(f.read().split()), 2, "a changed directory is scanned again")
+
+    def test_without_omx_clap_scan_there_are_no_clap_plugins(self):
+        clap_dir = os.path.join(self.tmp, "clap")
+        os.mkdir(clap_dir)
+        with mock.patch.object(cat, "clap_dirs", lambda: [clap_dir]), self.assertLogs(level=logging.WARNING) as logs:
+            self.assertEqual(cat.scan_clap(os.path.join(self.tmp, "clap.json")), [])
+        self.assertIn("omx-clap-scan is not installed", logs.output[0])
+
     def test_with_jalv_as_the_plugin_engine_the_menus_are_left_as_they_were(self):
         _lv2.engines_by_type["Audio Effect"]["JV/ZamComp"] = jalv = lv2_info("ZamComp", "urn:zamaudio:ZamComp")
         engines = {"JV/ZamComp": jalv}

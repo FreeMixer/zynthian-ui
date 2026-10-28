@@ -3,7 +3,7 @@
 # ZYNTHIAN PROJECT: plugin-hostd catalogue (zynthian_plugin_hostd_catalogue)
 #
 # The plugins the plugin-hostd engine offers: the LV2 instruments and effects
-# zynthian_lv2 lists from the installed bundles, and CLAP plugins as omx-clap-scan reports them.
+# zynthian_lv2 lists from the installed bundles, and the CLAP ones omx-clap-scan finds.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 #
@@ -14,9 +14,12 @@
 
 import os
 import re
+import json
 import shutil
 import logging
+import subprocess
 
+CONFIG_DIR = os.environ.get('ZYNTHIAN_CONFIG_DIR', "/zynthian/config")
 ENGINE_TYPES = ("MIDI Synth", "Audio Effect")
 PLUGIN_ENGINES = ("plugin-hostd", "jalv")
 # What the menus offer LV2 plugins through when ZYNTHIAN_PLUGIN_ENGINE is unset
@@ -66,6 +69,43 @@ def parse_clap_scan(text):
     return [p for p in plugins if "error" not in p]
 
 
+def clap_dirs():
+    dirs = [d for d in os.environ.get("CLAP_PATH", "").split(":") if d]
+    dirs += [os.path.expanduser("~/.clap"), "/usr/lib/clap", "/usr/local/lib/clap"]
+    return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
+
+
+def scan_clap(cache_path=None):
+    """omx-clap-scan of each CLAP directory, kept in a cache until a directory changes:
+    the scan loads every plugin, so it does not run at every start."""
+    cache_path = cache_path or os.path.join(CONFIG_DIR, "plugin-hostd-clap.json")
+    stamp = {d: os.stat(d).st_mtime for d in clap_dirs()}
+    try:
+        with open(cache_path) as f:
+            cache = json.load(f)
+        if cache["stamp"] == stamp:
+            return cache["plugins"]
+    except (OSError, ValueError, KeyError):
+        pass
+    scanner = shutil.which("omx-clap-scan")
+    if not scanner:
+        logging.warning("omx-clap-scan is not installed: no CLAP plugins for plugin-hostd")
+        return []
+    plugins = []
+    for d in stamp:
+        try:
+            out = subprocess.run([scanner, d], capture_output=True, text=True, timeout=300).stdout
+            plugins += parse_clap_scan(out)
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.error(f"omx-clap-scan {d} => {e}")
+    try:
+        with open(cache_path, "w") as f:
+            json.dump({"stamp": stamp, "plugins": plugins}, f)
+    except OSError as e:
+        logging.warning(f"Can't write {cache_path} => {e}")
+    return plugins
+
+
 def plugin_engine():
     """The engine the menus offer LV2 plugins through: ZYNTHIAN_PLUGIN_ENGINE, else DEFAULT_PLUGIN_ENGINE."""
     engine = os.environ.get("ZYNTHIAN_PLUGIN_ENGINE", "").strip().lower() or DEFAULT_PLUGIN_ENGINE
@@ -90,8 +130,8 @@ def refused_plugins():
 
 
 def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
-    """Add a PH entry for each LV2 instrument and effect in engines, and for each CLAP plugin in clap
-    (omx-clap-scan's plugins; none are offered by default yet), to engines. They are enabled when
+    """Add a PH entry for each LV2 instrument and effect in engines, and for each CLAP one in clap
+    (by default the ones omx-clap-scan finds, scan_clap), to engines. They are enabled when
     plugin-hostd is installed; an LV2 one only when its jalv entry is enabled too.
     The entries reach zynthian_lv2's lists by type, the menus, only with plugin-hostd as the plugin
     engine (ZYNTHIAN_PLUGIN_ENGINE=plugin-hostd): then the menus list the PH entry and not its jalv
@@ -116,7 +156,7 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
             entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (PH)",
                           "ENABLED": bool(info.get("ENABLED")) and available})
             added["PH/" + key[3:]] = entry
-    for plugin in (clap or []):
+    for plugin in (scan_clap() if clap is None else clap):
         etype = next((t for f, t in CLAP_TYPES if f in plugin["features"]), None)
         if not etype:
             continue
