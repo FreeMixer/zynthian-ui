@@ -31,6 +31,8 @@ from time import sleep
 from zyngine import *
 from zyngine import zynthian_lv2
 from zyngine import zynthian_plugin_hostd_catalogue
+from zyngine import zynthian_plugin_hostd_estimate
+from zyngine import zynthian_engine_plugin_hostd
 from zyngine import zynthian_plugin_qualification
 from zyngine import zynthian_plugin_tiers
 from zyngui import zynthian_gui_config
@@ -87,6 +89,10 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.menu_entries = {}
         self.list_order = "tier"  # one of zynthian_plugin_tiers.ORDERS
         self.hosted_only = False  # list only the plugins plugin-hostd runs
+        # The chain's figures with the highlighted plugin in it, asked of plugin-hostd off this thread
+        self.estimator = zynthian_plugin_hostd_estimate.estimator(zynthian_engine_plugin_hostd.estimate)
+        self.estimate_key = None
+        self.estimate_text = ""
 
         super().__init__('Engine', True, False)
 
@@ -118,6 +124,14 @@ class zynthian_gui_engine(zynthian_gui_selector):
             padx=self.padx,
             pady=self.pady,
             sticky="news")
+
+        # One line under the lists: what the chain costs with the highlighted plugin in it
+        self.estimate_label = tkinter.Label(
+            self.main_frame, text="", anchor="w", bd=0,
+            font=("sans-serif", int(0.8 * zynthian_gui_config.font_size)),
+            bg=zynthian_gui_config.color_bg, fg=zynthian_gui_config.color_panel_tx)
+        self.estimate_label.grid(row=self.layout['rows'], column=0, columnspan=self.layout['columns'],
+                                 padx=self.padx, sticky="we")
 
         # Canvas for engine info
         self.info_canvas = tkinter.Canvas(
@@ -368,6 +382,38 @@ class zynthian_gui_engine(zynthian_gui_selector):
         super().select(index, set_zctrl)
         self.update_info()
         self.update_context_index()
+        self.ask_estimate()
+
+    def ask_estimate(self):
+        """The chain's figures with the highlighted plugin in it, asked of plugin-hostd while the highlight
+        rests; the answer is shown when it comes, and the list is never waited for."""
+        refs = []
+        try:
+            fmt = zynthian_engine_plugin_hostd.audio_format(self.zyngui.state_manager)
+            status = self.zyngui.modify_chain_status
+            if fmt and not self.show_all and self.list_data and self.list_data[self.index][0]:
+                eng_code = self.list_data[self.index][0]
+                chain = self.chain_manager.get_chain(status["chain_id"]) if "chain_id" in status else None
+                refs = zynthian_engine_plugin_hostd.menu_refs(
+                    chain, eng_code, self.chain_manager.engine_info[eng_code], status.get("processor"))
+        except Exception as e:
+            logging.debug(f"No chain figures for the highlighted plugin => {e}")
+        self.estimate_key = (self.proc_type, self.cat_index, self.index, tuple(refs))
+        self.set_estimate_text("")
+        if refs:
+            self.estimator.request(self.estimate_key, fmt[0], fmt[1], refs)
+            self.main_frame.after(150, self.poll_estimate)
+
+    def poll_estimate(self):
+        result = self.estimator.result
+        if result and result[0] == self.estimate_key:
+            self.set_estimate_text(result[1] or "")
+        elif self.shown and self.estimate_key[3]:
+            self.main_frame.after(150, self.poll_estimate)
+
+    def set_estimate_text(self, text):
+        self.estimate_text = text
+        self.estimate_label.configure(text=text)
 
     def select_action(self, i, t='S'):
         if t == 'S':

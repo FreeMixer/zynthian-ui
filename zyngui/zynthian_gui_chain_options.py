@@ -28,6 +28,7 @@ import os
 
 # Zynthian specific modules
 import zynautoconnect
+from zyngine import zynthian_engine_plugin_hostd
 from zyngui import zynthian_gui_config
 from zyngui.zynthian_gui_selector_info import zynthian_gui_selector_info
 
@@ -66,6 +67,9 @@ class zynthian_gui_chain_options(zynthian_gui_selector_info):
         midi_proc_count = self.chain.get_processor_count("MIDI Tool")
         audio_proc_count = max(0, self.chain.get_processor_count("Audio Effect") - 1)
 
+        figures = zynthian_engine_plugin_hostd.daemon.chain_figures.get(self.chain.chain_id)
+        if figures:
+            self.list_data.append((None, None, figures[3]))
         self.list_data.append((None, None, "> PROCESSORS"))
         len_check = len(self.list_data)
         if self.chain.is_midi():
