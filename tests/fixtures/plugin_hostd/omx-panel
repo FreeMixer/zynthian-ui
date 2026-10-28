@@ -23,7 +23,9 @@ for c in descriptor["controls"]:
     widget = "knob"
     if c.get("readonly"):
         widget = "meter" if unit in ("dB", "dBFS", "dBu", "LUFS") else "display"
-    controls.append({"symbol": c["id"], "param": c["id"], "section": sections.index(label),
+    # omx-panel names a CLAP parameter p<number>; an LV2 port keeps its symbol
+    symbol = c["id"] if isinstance(c["id"], str) else f"p{c['id']}"
+    controls.append({"symbol": symbol, "param": c["id"], "section": sections.index(label),
                      "label": c.get("label") or c["name"], "unit": unit, "widget": widget})
 layout = {"origin": descriptor.get("origin"), "family": "none",
           "sections": [{"key": s.lower(), "label": s} for s in sections], "controls": controls}

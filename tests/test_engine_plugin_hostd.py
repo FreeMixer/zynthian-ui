@@ -710,6 +710,16 @@ class test_pages(plugin_hostd_case):
         with open(runs) as f:
             self.assertEqual(len(f.readlines()), 4, "a changed descriptor is laid out again")
 
+    def test_a_clap_parameter_is_addressed_by_its_number_not_by_the_layouts_name(self):
+        # omx-panel names a CLAP parameter p<number> in its layout; plugin-hostd knows it by the number alone
+        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
+        uri = "clap:/usr/lib/clap/test.clap#org.test.synth"
+        fake = self.serve(descriptors={uri: os.path.join(FIXTURES, "synth.descriptor.json")})
+        proc = self.add(self.chain(), "PH/" + uri)
+        self.assertEqual([z.symbol for z in proc.get_ctrl_screen("Controls")], ["1", "2"])
+        proc.controllers_dict["2"].set_value(3)
+        self.assertEqual(fake.params[1000]["2"], 3.0, "the value reaches the plugin")
+
     def test_without_omx_panel_the_pages_follow_the_parameter_order(self):
         self.big()
         with self.assertLogs(level=logging.WARNING) as logs:

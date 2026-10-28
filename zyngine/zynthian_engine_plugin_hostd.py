@@ -688,7 +688,9 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                     lc, dc = layout[1].get(str(pid), {}), dcontrols.get(str(pid), {})
                     if lc.get("widget") in ("meter", "display") or dc.get("readonly"):
                         continue
-                    rows.append((str(lc.get("symbol", pid)), lc.get("label") or dc.get("name"), lc.get("unit"), dc))
+                    # The daemon addresses a parameter by the descriptor's id (a CLAP parameter's number, an LV2
+                    # port's symbol); the layout's symbol is omx-panel's own name for it (p<number> for CLAP)
+                    rows.append((str(pid), lc.get("label") or dc.get("name"), lc.get("unit"), dc))
                 if rows:
                     result.append((page.get("pageName") or page.get("sectionName"), rows))
             return result
