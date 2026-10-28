@@ -1,0 +1,22 @@
+{
+  "origin": "scanned",
+  "plugin": {"id": "urn:test:big", "format": "lv2", "uri": "urn:test:big", "name": "Big", "features": ["audio-effect"]},
+  "controls": [
+    {"id": "p0", "name": "Freq 0", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p1", "name": "Freq 1", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p2", "name": "Freq 2", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p3", "name": "Freq 3", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p4", "name": "Freq 4", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p5", "name": "Freq 5", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p6", "name": "Freq 6", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p7", "name": "Freq 7", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p8", "name": "Freq 8", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "p9", "name": "Freq 9", "kind": "travel", "travel": {"min": 0, "max": 100, "unit": "Hz", "default": 10, "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "gr", "name": "Gain Reduction", "kind": "travel", "readonly": true, "travel": {"min": 0, "max": 20, "unit": "dB", "scale": "linear"}, "group": ["Main"], "meaning": "unknown"},
+    {"id": "out", "name": "Output Level", "kind": "travel", "readonly": true, "travel": {"min": -45, "max": 20, "unit": "dB", "scale": "linear"}, "group": ["Main"], "meaning": "unknown"}
+  ],
+  "ports": [
+    {"id": "in_1", "name": "In", "kind": "audio", "direction": "in", "role": "main", "channels": 1},
+    {"id": "out_1", "name": "Out", "kind": "audio", "direction": "out", "role": "main", "channels": 1}
+  ]
+}

@@ -1,0 +1,43 @@
+#!/usr/bin/env python3
+# A stand-in for `omx-panel layout --descriptor <file> [--pages]`: the sections are the descriptor's
+# groups, a read-only control is a display (a meter in a level unit), and --pages cuts each section
+# in pages of eight as omx-panel's pagesOf does. Each run is appended to $OMX_PANEL_STUB_LOG.
+import os
+import sys
+import json
+
+argv = sys.argv[1:]
+if os.environ.get("OMX_PANEL_STUB_LOG"):
+    with open(os.environ["OMX_PANEL_STUB_LOG"], "a") as f:
+        f.write(" ".join(argv) + "\n")
+with open(argv[argv.index("--descriptor") + 1]) as f:
+    descriptor = json.load(f)
+sections, controls = [], []
+for c in descriptor["controls"]:
+    if c.get("hidden"):
+        continue
+    label = " / ".join(c.get("group") or ["Controls"])
+    if label not in sections:
+        sections.append(label)
+    unit = c.get("travel", {}).get("unit", "unknown")
+    widget = "knob"
+    if c.get("readonly"):
+        widget = "meter" if unit in ("dB", "dBFS", "dBu", "LUFS") else "display"
+    # omx-panel names a CLAP parameter p<number>; an LV2 port keeps its symbol
+    symbol = c["id"] if isinstance(c["id"], str) else f"p{c['id']}"
+    controls.append({"symbol": symbol, "param": c["id"], "section": sections.index(label),
+                     "label": c.get("label") or c["name"], "unit": unit, "widget": widget})
+layout = {"origin": descriptor.get("origin"), "family": "none",
+          "sections": [{"key": s.lower(), "label": s} for s in sections], "controls": controls}
+if "--pages" in argv:
+    pages = []
+    for i, s in enumerate(sections):
+        ids = [c["param"] for c in controls if c["section"] == i]
+        count = (len(ids) + 7) // 8
+        for k in range(count):
+            slots = ids[k * 8:(k + 1) * 8]
+            slots += [None] * (8 - len(slots))
+            pages.append({"section": i, "sectionName": s, "pageName": f"{s} {k + 1}" if count > 1 else s, "ids": slots})
+    print(json.dumps(pages, indent=2))
+else:
+    print(json.dumps(layout, indent=2))
