@@ -1,0 +1,39 @@
+{
+ "schema": "plugin-qualify.qualification-record/1",
+ "plugin": {
+  "format": "lv2",
+  "id": "urn:fig:unmeasured"
+ },
+ "binary": {
+  "root": "/usr/lib/lv2/analog.lv2"
+ },
+ "verdicts": [
+  {
+   "host": "openmixer-console",
+   "measured": true,
+   "rating": "unknown",
+   "qualified": false,
+   "hosting": "isolated",
+   "deciding": "hosting.rt-safety.unmeasured"
+  }
+ ],
+ "measurements": {
+  "grid": [
+   {
+    "rate": 48000,
+    "quantum": 256,
+    "outcome": "probe.ok",
+    "latency": {
+     "measuredFrames": 32
+    },
+    "rtSafety": {
+     "interposer": false
+    }
+   }
+  ]
+ },
+ "measuredAt": "2026-10-28T10:00:00+00:00",
+ "probe": {
+  "outcome": "probe.ok"
+ }
+}

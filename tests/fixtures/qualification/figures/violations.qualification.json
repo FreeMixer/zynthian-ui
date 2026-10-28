@@ -1,0 +1,57 @@
+{
+ "schema": "plugin-qualify.qualification-record/1",
+ "plugin": {
+  "format": "lv2",
+  "id": "urn:fig:violations"
+ },
+ "binary": {
+  "root": "/usr/lib/lv2/locky.lv2"
+ },
+ "verdicts": [
+  {
+   "host": "openmixer-console",
+   "measured": true,
+   "rating": "unsuitable",
+   "qualified": false,
+   "hosting": "isolated",
+   "deciding": "hosting.rt-safety.violations-in-run"
+  }
+ ],
+ "measurements": {
+  "grid": [
+   {
+    "rate": 48000,
+    "quantum": 256,
+    "outcome": "probe.ok",
+    "latency": {
+     "declaredFrames": 64,
+     "measuredFrames": 64
+    },
+    "cost": {
+     "median": 30.5,
+     "percentile": {
+      "p": 95,
+      "value": 33.1
+     },
+     "blocks": 512,
+     "warmupBlocks": 64
+    },
+    "rtSafety": {
+     "interposer": true,
+     "swept": true,
+     "sweepApplicable": true,
+     "blocks": 512,
+     "allocations": 0,
+     "locks": 12,
+     "syscalls": 0,
+     "threadViolations": 0,
+     "processErrors": 0
+    }
+   }
+  ]
+ },
+ "measuredAt": "2026-10-28T10:00:00+00:00",
+ "probe": {
+  "outcome": "probe.ok"
+ }
+}

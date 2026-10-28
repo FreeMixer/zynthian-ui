@@ -1,0 +1,16 @@
+{
+ "schema": "plugin-qualify.unmeasured-record/1",
+ "plugin": {
+  "format": "lv2",
+  "uri": "urn:fig:unprobed"
+ },
+ "outcome": "unmeasured",
+ "code": "qualify.sync.not-measured",
+ "notMeasured": [
+  {
+   "dimension": "all",
+   "code": "qualify.sync.not-measured"
+  }
+ ],
+ "measuredAt": "2026-10-28T10:00:00+00:00"
+}

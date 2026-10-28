@@ -34,7 +34,11 @@ DIMENSIONS = ("latency", "cost", "stability", "rtSafety", "features")
 # One plugin as the menus see it. record: a measurement document holds it. pin: its pin verdict word
 # or None. latency_ms: at the current rate, None when not measured there and no scaling law carries
 # it. worst_latency_ms: the worst measured rate. rt_safe, soaked: True, False or None (not measured).
-Facts = namedtuple("Facts", "record pin deciding crashed hung latency_ms worst_latency_ms rt_safe soaked")
+# The figures a menu row shows, as the record holds them and None where it does not: frames and
+# declared_frames, the measured and the declared latency at the current rate; cost_ns, the median
+# cost in ns per sample measured at the current rate and quantum.
+Facts = namedtuple("Facts", "record pin deciding crashed hung latency_ms worst_latency_ms rt_safe soaked "
+                            "frames declared_frames cost_ns", defaults=(None, None, None))
 NO_FACTS = Facts(False, None, None, False, False, None, None, None, None)
 
 
@@ -134,12 +138,18 @@ def record_entry(rec):
     for p in ok:
         lat = p.get("latency")
         if isinstance(lat, dict) and isinstance(lat.get("measuredFrames"), (int, float)) and isinstance(p.get("rate"), int):
-            per_rate.setdefault(str(p["rate"]), {"frames": lat["measuredFrames"]})
+            reading = {"frames": lat["measuredFrames"]}
+            if isinstance(lat.get("declaredFrames"), (int, float)):
+                reading["declaredFrames"] = lat["declaredFrames"]
+            per_rate.setdefault(str(p["rate"]), reading)
     plugin["latency"] = {"perRate": per_rate}
+    plugin["cost"] = {"grid": [{"rate": p.get("rate"), "quantum": p.get("quantum"), "median": p["cost"].get("median")}
+                               for p in ok if isinstance(p.get("cost"), dict)]}
     points = [p["rtSafety"] for p in ok if isinstance(p.get("rtSafety"), dict)]
     if points and all(r.get("interposer") is True for r in points):
         counts = {}
-        for key, name in (("allocations", "allocationsInRun"), ("locks", "locksInRun"), ("syscalls", "syscallsInRun")):
+        for key, name in (("allocations", "allocationsInRun"), ("locks", "locksInRun"), ("syscalls", "syscallsInRun"),
+                          ("threadViolations", "threadViolationsInRun")):
             values = [r.get(key) for r in points]
             if all(isinstance(v, (int, float)) for v in values):
                 counts[name] = sum(values)
@@ -158,41 +168,54 @@ def record_entry(rec):
     return str(rec.get("measuredAt", "")), plugin, verdicts
 
 
-def read_documents(path):
+def file_entries(fpath):
+    """[(key, measuredAt, plugin, [verdicts])] of one file: a qualification record or a measurement document."""
+    try:
+        with open(fpath) as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as e:
+        logging.warning(f"Can't read qualification file {fpath} => {e}")
+        return []
+    if not isinstance(doc, dict):
+        return []
+    if doc.get("schema") == RECORD_SCHEMA:
+        entry = record_entry(doc)
+        return [(record_key(doc), *entry)] if entry else []
+    if doc.get("format") != DOCUMENT_FORMAT:
+        return []
+    when = str(doc.get("run", {}).get("measuredAt", ""))
+    verdicts = {}
+    for v in doc.get("verdicts", []):
+        verdicts.setdefault(v.get("uri"), []).append(v)
+    return [(plugin.get("uri"), when, plugin, verdicts.get(plugin.get("uri"), []))
+            for plugin in doc.get("plugins", [])]
+
+
+def read_documents(path, cache=None):
     """{key: (measuredAt, plugin, [verdicts])} of both formats in path, the latest run of each plugin
-    winning: the measurement documents by LV2 uri, the qualification records by record_key."""
+    winning: the measurement documents by LV2 uri, the qualification records by record_key.
+    cache, {file: (mtime, size, entries)}, keeps what each file held: a file is read again only when
+    its mtime or size changed, and a file gone from path leaves the cache."""
+    cache = {} if cache is None else cache
     found = {}
-
-    def keep(key, when, plugin, verdicts):
-        if key and (key not in found or found[key][0] <= when):
-            found[key] = (when, plugin, verdicts)
-
+    seen = set()
     for top, dirs, names in os.walk(path):
         dirs.sort()
         for name in sorted(n for n in names if n.endswith(".json")):
             fpath = os.path.join(top, name)
             try:
-                with open(fpath) as f:
-                    doc = json.load(f)
-            except (OSError, ValueError) as e:
-                logging.warning(f"Can't read qualification file {fpath} => {e}")
+                st = os.stat(fpath)
+            except OSError:
                 continue
-            if not isinstance(doc, dict):
-                continue
-            if doc.get("schema") == RECORD_SCHEMA:
-                entry = record_entry(doc)
-                if entry:
-                    keep(record_key(doc), *entry)
-                continue
-            if doc.get("format") != DOCUMENT_FORMAT:
-                continue
-            when = str(doc.get("run", {}).get("measuredAt", ""))
-            verdicts = {}
-            for v in doc.get("verdicts", []):
-                verdicts.setdefault(v.get("uri"), []).append(v)
-            for plugin in doc.get("plugins", []):
-                uri = plugin.get("uri")
-                keep(uri, when, plugin, verdicts.get(uri, []))
+            seen.add(fpath)
+            stamp = (st.st_mtime_ns, st.st_size)
+            if cache.get(fpath, (None,))[:2] != stamp:
+                cache[fpath] = (*stamp, file_entries(fpath))
+            for key, when, plugin, verdicts in cache[fpath][2]:
+                if key and (key not in found or found[key][0] <= when):
+                    found[key] = (when, plugin, verdicts)
+    for fpath in set(cache) - seen:
+        del cache[fpath]
     return found
 
 
@@ -227,6 +250,29 @@ def latency_at(plugin, rate):
     return None
 
 
+def latency_frames(plugin, rate):
+    """(measured, declared) frames the record holds at rate, each None when it holds none; no other
+    rate's reading and no scaling law stands in for them."""
+    r = plugin.get("latency", {}).get("perRate", {}).get(str(rate), {})
+    if r.get("excludedReason"):
+        return None, None
+    frames, declared = r.get("frames"), r.get("declaredFrames")
+    return (frames if isinstance(frames, (int, float)) else None,
+            declared if isinstance(declared, (int, float)) else None)
+
+
+def cost_at(plugin, rate, quantum):
+    """The median cost in ns per sample measured at rate and quantum: a record's grid point, or a
+    measurement document's reading at rate taken in blocks of quantum frames. None when not measured there."""
+    for p in plugin.get("cost", {}).get("grid", []):
+        if p.get("rate") == rate and p.get("quantum") == quantum and isinstance(p.get("median"), (int, float)):
+            return p["median"]
+    r = plugin.get("cost", {}).get("perRate", {}).get(str(rate), {})
+    if r.get("blockFrames") == quantum and isinstance(r.get("nsPerSampleMedian"), (int, float)):
+        return r["nsPerSampleMedian"]
+    return None
+
+
 def worst_latency(plugin):
     readings = latency_readings(plugin)
     return max(frames * 1000.0 / rate for rate, frames in readings.items()) if readings else None
@@ -238,7 +284,7 @@ def rt_safe(plugin):
     counts = [rt.get(k) for k in ("allocationsInRun", "locksInRun", "syscallsInRun")]
     if not rt.get("interposer") or any(c is None for c in counts):
         return None
-    if any(counts):
+    if any(counts) or rt.get("threadViolationsInRun"):
         return False
     return True if rt.get("swept") or rt.get("sweepApplicable") is False else None
 
@@ -266,8 +312,9 @@ def hung(plugin):
     return any(plugin.get(d, {}).get("unmeasuredReason") == "probe-timeout" for d in DIMENSIONS)
 
 
-def facts_of(entry, pin, rate):
-    """Facts from a document entry (measuredAt, plugin, verdicts) or None, and a pin word or None."""
+def facts_of(entry, pin, rate, quantum=None):
+    """Facts from a document entry (measuredAt, plugin, verdicts) or None, and a pin word or None,
+    at the current rate and quantum."""
     if entry is None:
         return NO_FACTS._replace(pin=pin)
     plugin, verdicts = entry[1], entry[2]
@@ -276,11 +323,12 @@ def facts_of(entry, pin, rate):
     worst = sorted(verdicts, key=lambda v: order.index(v.get("rating")) if v.get("rating") in order else 0)
     deciding = next((v.get("deciding") for v in worst if v.get("deciding")), None)
     return Facts(True, pin, deciding, crashed(plugin, deciding), hung(plugin), latency_at(plugin, rate),
-                 worst_latency(plugin), rt_safe(plugin), soaked(plugin, deciding))
+                 worst_latency(plugin), rt_safe(plugin), soaked(plugin, deciding),
+                 *latency_frames(plugin, rate), cost_at(plugin, rate, quantum))
 
 
 class qualification:
-    """Every plugin's facts, read again when a file changes."""
+    """Every plugin's facts, read again when a file changes: a record once per mtime, never loading a plugin."""
 
     def __init__(self, path=None, pins=None):
         self.path = path
@@ -288,6 +336,7 @@ class qualification:
         self.stamp = None
         self.documents = {}
         self.pin_verdicts = {}
+        self.cache = {}
 
     def files(self):
         path = self.path or qualification_dir()
@@ -306,10 +355,10 @@ class qualification:
     def refresh(self):
         path, pins, stamp = self.files()
         if stamp != self.stamp:
-            self.documents = read_documents(path) if os.path.isdir(path) else {}
+            self.documents = read_documents(path, self.cache) if os.path.isdir(path) else {}
             self.pin_verdicts = read_pins(pins)
             self.stamp = stamp
         return self
 
-    def facts(self, uri, rate):
-        return facts_of(self.documents.get(uri), self.pin_verdicts.get(uri), rate)
+    def facts(self, uri, rate, quantum=None):
+        return facts_of(self.documents.get(uri), self.pin_verdicts.get(uri), rate, quantum)

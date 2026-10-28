@@ -85,6 +85,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.xswipe_sens = 10
         self.qualification = zynthian_plugin_qualification.qualification()
         self.menu_entries = {}
+        self.list_order = "tier"  # one of zynthian_plugin_tiers.ORDERS
+        self.hosted_only = False  # list only the plugins plugin-hostd runs
 
         super().__init__('Engine', True, False)
 
@@ -283,16 +285,19 @@ class zynthian_gui_engine(zynthian_gui_selector):
         # self.engines_by_cat = sorted(self.engines_by_cat.items(), key=lambda kv: "!" if kv[0] is None else kv[0])
 
     def qualified_entries(self, engines_by_cat):
-        """{cat: [(engine, text, greyed)]}: the plugins tagged with their tier, live first, the hidden ones dropped
-        or greyed. Plain titles in their own order if the qualification can't be read."""
+        """{cat: [(engine, text, greyed)]}: the plugins tagged with their tier and their figures at the current
+        rate and quantum, in the chosen order, the hidden ones dropped or greyed. Plain titles in their own
+        order if the qualification can't be read."""
         try:
             rate = self.zyngui.state_manager.get_jackd_samplerate()
+            quantum = self.zyngui.state_manager.get_jackd_blocksize()
         except Exception:
-            rate = None
+            rate = quantum = None
         try:
             q = self.qualification.refresh()
             live_ms, show = zynthian_plugin_tiers.live_max_ms(), zynthian_plugin_tiers.show_hidden()
-            return {cat: zynthian_plugin_tiers.menu_entries(engines, lambda url: q.facts(url, rate), live_ms, show)
+            return {cat: zynthian_plugin_tiers.menu_entries(engines, lambda url: q.facts(url, rate, quantum), live_ms,
+                                                             show, self.list_order, self.hosted_only)
                     for cat, engines in engines_by_cat.items()}
         except Exception as e:
             logging.error(f"Can't read the plugin qualification => {e}")
@@ -393,6 +398,40 @@ class zynthian_gui_engine(zynthian_gui_selector):
                 self.show_all = True
                 self.get_engines_by_cat()
                 self.update_list()
+
+    # --------------------------------------------------------------------------
+    # List options: the order and the plugin-hostd filter
+    # --------------------------------------------------------------------------
+
+    order_titles = {"tier": "Tier", "name": "Name", "cost": "Cost", "latency": "Latency", "rt": "RT safety"}
+
+    def show_menu(self):
+        options = {"Sort by": None}
+        for order, title in self.order_titles.items():
+            mark = "\u2612" if order == self.list_order else "\u2610"
+            options[f"{mark} {title}"] = ("order", order)
+        options["Filter"] = None
+        mark = "\u2612" if self.hosted_only else "\u2610"
+        options[f"{mark} plugin-hostd plugins only"] = ("hosted_only", not self.hosted_only)
+        self.zyngui.screens['option'].config("Plugin list", options, self.list_options_cb)
+        self.zyngui.show_screen('option')
+
+    def toggle_menu(self):
+        if self.shown:
+            self.show_menu()
+        elif self.zyngui.get_current_screen() == "option":
+            self.close_screen()
+
+    def list_options_cb(self, option, value):
+        what, value = value
+        if what == "order":
+            self.list_order = value
+        else:
+            self.hosted_only = value
+        self.index = 0
+        self.get_engines_by_cat()
+        self.update_context_index()
+        self.update_list()
 
     def back_action(self):
         if self.show_all:
