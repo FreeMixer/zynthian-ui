@@ -24,10 +24,12 @@ import socket
 import logging
 import tarfile
 import tempfile
+import threading
 import subprocess
 
 from zyngine import zynthian_plugin_hostd_protocol
 from zyngine import zynthian_plugin_hostd_grouping
+from zyngine import zynthian_plugin_hostd_estimate
 from zyngine.zynthian_engine import zynthian_engine
 from zyngine.zynthian_controller import zynthian_controller
 from zyngine.zynthian_plugin_hostd_catalogue import clap_plugins
@@ -148,6 +150,7 @@ class plugin_hostd_daemon:
 
     def __init__(self, port=DEFAULT_PORT):
         self.client = plugin_hostd_client(port)
+        self.lock = threading.RLock()  # the estimate is asked from a thread of its own, on the one connection
         self.start_script = START_SCRIPT
         self.conf = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_CONF",
                                    os.path.join(zynthian_engine.config_dir, "plugin-hostd.conf"))
@@ -160,6 +163,8 @@ class plugin_hostd_daemon:
         self.reasons = {}  # member instance => the reason word plan_get gave for it
         self.plan_verbs = None  # whether the daemon answers plan: None until it was asked
         self.grouping = None  # False once a plan came back with grouping-off; None while that is not known
+        self.estimate_verb = None  # whether the daemon answers estimate: False once it refused it, for the session
+        self.chain_figures = {}  # zynthian chain id => (refs, rate, quantum, footer text) of the chain as it is
 
     def identify(self):
         """True when a plugin-hostd answers on the port: mod-host refuses worker_list."""
@@ -198,14 +203,15 @@ class plugin_hostd_daemon:
 
     def call(self, line, timeout=TIMEOUT):
         """One command; if the connection is gone, bring the daemon back, replay and send it again."""
-        if self.client.sock is None:
+        with self.lock:
+            if self.client.sock is None:
+                self.restore()
+            try:
+                return self.client.call(line, timeout)
+            except OSError as e:
+                logging.warning(f"plugin-hostd connection lost ({e}), restoring")
             self.restore()
-        try:
             return self.client.call(line, timeout)
-        except OSError as e:
-            logging.warning(f"plugin-hostd connection lost ({e}), restoring")
-        self.restore()
-        return self.client.call(line, timeout)
 
     def restore(self):
         self.client.close()
@@ -245,15 +251,16 @@ class plugin_hostd_daemon:
         raise plugin_hostd_error(protocol.code("ERR_MEMORY_ALLOCATION"), f"add {uri}")
 
     def remove(self, instance):
-        self.engines.pop(instance, None)
-        self.reasons.pop(instance, None)
-        try:
-            self.client.call(f"remove {instance}")
-        except (plugin_hostd_error, plugin_hostd_timeout, OSError) as e:
-            logging.warning(f"plugin-hostd remove {instance} => {e}")
-        if not self.engines:
-            # The daemon serves one controller at a time: let another one in
-            self.stop() if self.pid else self.client.close()
+        with self.lock:
+            self.engines.pop(instance, None)
+            self.reasons.pop(instance, None)
+            try:
+                self.client.call(f"remove {instance}")
+            except (plugin_hostd_error, plugin_hostd_timeout, OSError) as e:
+                logging.warning(f"plugin-hostd remove {instance} => {e}")
+            if not self.engines:
+                # The daemon serves one controller at a time: let another one in
+                self.stop() if self.pid else self.client.close()
 
     def stop(self):
         """Stop the daemon, only if this process started it."""
@@ -313,6 +320,72 @@ def chain_clients(chain_id):
     return {}
 
 
+def chain_refs(chain):
+    """The plugin refs of the plugin-hostd members of a zynthian chain in signal order."""
+    return [p.engine.plugin_uri for slot in chain.synth_slots + chain.audio_slots for p in slot
+            if isinstance(p.engine, zynthian_engine_plugin_hostd)]
+
+
+def menu_refs(chain, eng_code, info, replacing=None):
+    """The plugin refs to ask the estimate for while a row of the plugin menu is highlighted: the chain's
+    plugin-hostd members (all but the processor being replaced) and the row's plugin last; [] for a row the
+    daemon does not run, or when it has no ref."""
+    if eng_code.split("/")[0] != "PH" or not info.get("URL"):
+        return []
+    members = [p.engine.plugin_uri for slot in (chain.synth_slots + chain.audio_slots if chain else ())
+               for p in slot if p is not replacing and isinstance(p.engine, zynthian_engine_plugin_hostd)]
+    return members + [info["URL"]]
+
+
+def estimate(rate, quantum, refs):
+    """The daemon's figures for a chain of these plugin refs at this rate and quantum, from its qualification
+    records: plugin_hostd_estimate.parse's dict. estimate_unavailable once the daemon has refused the verb as
+    mod-host does, and for the rest of the session, so it is not asked again; a refusal of the question itself
+    (a plugin it does not know) is a plugin_hostd_error, and no figure."""
+    if daemon.estimate_verb is False:
+        raise zynthian_plugin_hostd_estimate.estimate_unavailable()
+    try:
+        reply = daemon.call(f"estimate {rate} {quantum} {' '.join(refs)}")[1]
+    except plugin_hostd_error as e:
+        if e.code == protocol.code("ERR_INVALID_OPERATION"):
+            daemon.estimate_verb = False
+            logging.warning("plugin-hostd does not answer estimate: no chain figures this session")
+            raise zynthian_plugin_hostd_estimate.estimate_unavailable()
+        raise
+    daemon.estimate_verb = True
+    return zynthian_plugin_hostd_estimate.parse(reply)
+
+
+def audio_format(state_manager):
+    """(rate, quantum) of the audio device, None when it does not say integers."""
+    try:
+        rate, quantum = state_manager.get_jackd_samplerate(), state_manager.get_jackd_blocksize()
+    except Exception:
+        return None
+    return (rate, quantum) if isinstance(rate, int) and isinstance(quantum, int) else None
+
+
+def figure_chain(chain, state_manager):
+    """Ask, off the caller's thread, for the figures of the chain as it is: they are in daemon.chain_figures
+    when the answer is there. The chain view shows them."""
+    refs, fmt = chain_refs(chain), audio_format(state_manager)
+    if not refs or fmt is None or daemon.estimate_verb is False:
+        daemon.chain_figures.pop(chain.chain_id, None)
+        return
+    if daemon.chain_figures.get(chain.chain_id, (None,))[0:3] == (refs, *fmt):
+        return
+
+    def ask():
+        try:
+            text = zynthian_plugin_hostd_estimate.footer(estimate(fmt[0], fmt[1], refs))
+        except Exception as e:
+            logging.debug(f"plugin-hostd estimate of chain {chain.chain_id} => {e}")
+            return
+        if chain_refs(chain) == refs:  # the chain has not moved on since the question
+            daemon.chain_figures[chain.chain_id] = (refs, fmt[0], fmt[1], text)
+    threading.Thread(target=ask, daemon=True).start()
+
+
 def sync_chain(chain):
     """Run the plugin-hostd members of a zynthian chain in one worker, in signal order, then give each
     processor the jack client it has now: the chain's own for the members its worker runs as one client,
@@ -320,10 +393,16 @@ def sync_chain(chain):
     Called from the chain's graph rebuild, so after insert, remove, swap and nudge."""
     declare_chain(chain)
     clients = daemon.clients.get(chain.chain_id, {})
+    engines = []
     for slot in chain.synth_slots + chain.audio_slots:
         for p in slot:
             if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None:
                 p.jackname = clients.get(p.engine.instance, p.engine.jackname)
+                engines.append(p.engine)
+    if engines:
+        figure_chain(chain, engines[0].state_manager)
+    else:
+        daemon.chain_figures.pop(chain.chain_id, None)
 
 
 def chain_members(chain):
