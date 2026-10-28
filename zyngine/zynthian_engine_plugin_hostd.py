@@ -694,7 +694,6 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                     dlist = json.load(f).get("controls", [])
                 for c in dlist:
                     dcontrols[str(c["id"])] = c
-                    dcontrols.setdefault(str(c.get("name")), c)
             except (OSError, ValueError, KeyError) as e:
                 logging.error(f"Can't read descriptor {path} => {e}")
         layout = panel_layout(path) if path else None
