@@ -65,6 +65,10 @@ def load_screen():
 screen_module = load_screen()
 
 
+FAST = "Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp"
+SLOW = "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown"
+
+
 def info(name, url, enabled=True, title=None):
     return {"NAME": name, "TITLE": title or f"{name} (PH)", "TYPE": "Audio Effect", "CAT": "Dynamics", "URL": url,
             "ENABLED": enabled, "EDIT": 0}
@@ -85,10 +89,12 @@ class engine_menu(unittest.TestCase):
         s.zyngui = mock.MagicMock()
         s.zyngui.modify_chain_status = {"type": "MIDI Synth"}
         s.zyngui.state_manager.get_jackd_samplerate.return_value = 48000
+        s.zyngui.state_manager.get_jackd_blocksize.return_value = 256
         s.qualification = qual.qualification(os.path.join(FIXTURES, "records"), [os.path.join(FIXTURES, "pins")])
         s.listbox, s.listbox2 = mock.MagicMock(), mock.MagicMock()
         s.lb2_fg = s.lb2_bg = "#c"
         s.cat_index, s.show_all, s.engine_info_dirty, s.index, s.context_index = 0, False, False, 0, {}
+        s.list_order, s.hosted_only = "tier", False
         s.update_list = lambda: None
         self.screen = s
 
@@ -100,12 +106,12 @@ class engine_menu(unittest.TestCase):
         return [row[2] for row in self.screen.filled]
 
     def test_the_menu_is_tagged_and_ordered_and_hides_the_refused_and_crashed(self):
-        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0.0 ms · RT", "Linear EQ (PH)  studio · 21 ms · RT"])
+        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown"])
         self.assertEqual(self.screen.engine_cats, ["Dynamics"], "a category of hidden plugins only is not listed")
         self.screen.listbox.itemconfig.assert_not_called()
 
     def test_shown_the_hidden_ones_are_greyed(self):
-        self.assertEqual(self.build("1"), ["Fast Comp (PH)  live · 0.0 ms · RT", "Linear EQ (PH)  studio · 21 ms · RT",
+        self.assertEqual(self.build("1"), ["Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown",
                                            "Refused Amp (PH)  hidden · refused"])
         self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#grey"})
         self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
@@ -114,11 +120,34 @@ class engine_menu(unittest.TestCase):
         # The catalogue leaves the jalv row of a plugin plugin-hostd refuses in the menu: it is offered, tagged
         self.engines["JV/Refused"] = info("Refused Amp", "urn:q:refused", title="Refused Amp")
         self.by_cat["Dynamics"]["JV/Refused"] = self.engines["JV/Refused"]
-        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0.0 ms · RT", "Linear EQ (PH)  studio · 21 ms · RT",
+        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown",
                                         "Refused Amp  refused"])
         self.screen.listbox.itemconfig.assert_not_called()
         self.assertEqual(self.build("1")[2:], ["Refused Amp  refused", "Refused Amp (PH)  hidden · refused"])
         self.screen.listbox.itemconfig.assert_called_once_with(3, {'fg': "#grey"})
+
+    def test_the_list_options_sort_and_filter_the_menu(self):
+        self.engines["JV/Slow"] = info("Linear EQ", "urn:q:slow", title="Linear EQ")
+        self.by_cat["Dynamics"]["JV/Slow"] = self.engines["JV/Slow"]
+        self.build()
+        self.screen.show_menu()
+        title, options, cb = self.screen.zyngui.screens['option'].config.call_args.args
+        self.assertEqual(title, "Plugin list")
+        self.assertEqual(list(options), ["Sort by", "\u2612 Tier", "\u2610 Name", "\u2610 Cost", "\u2610 Latency",
+                                         "\u2610 RT safety", "Filter", "\u2610 plugin-hostd plugins only"])
+        with self.assertLogs(level=logging.WARNING):
+            self.screen.qualification.stamp = None
+            cb("\u2610 Latency", options["\u2610 Latency"])
+        self.screen.fill_list()
+        self.assertEqual([row[2] for row in self.screen.filled],
+                         [FAST, "Linear EQ  studio · 1024 fr · RT clean · cost unknown", SLOW])
+        self.screen.show_menu()
+        options = self.screen.zyngui.screens['option'].config.call_args.args[1]
+        self.assertIn("\u2612 Latency", options)
+        cb("\u2610 plugin-hostd plugins only", options["\u2610 plugin-hostd plugins only"])
+        self.screen.fill_list()
+        self.assertEqual([row[2] for row in self.screen.filled], [FAST, SLOW])
+        self.assertEqual((self.screen.list_order, self.screen.hosted_only, self.screen.index), ("latency", True, 0))
 
     def test_an_unreadable_qualification_leaves_the_plain_menu(self):
         self.screen.qualification = mock.MagicMock()
