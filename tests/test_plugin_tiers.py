@@ -93,11 +93,24 @@ class settings(unittest.TestCase):
 
     def test_paths(self):
         with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_DIR": "", "OMX_QUALIFICATION_DIR": "",
-                                          "ZYNTHIAN_QUALIFICATION_PINS": ""}):
+                                          "ZYNTHIAN_QUALIFICATION_PINS": "", "ZYNTHIAN_PLUGIN_HOSTD_CONF": "/absent.conf"}):
             self.assertEqual(qual.qualification_dir(), "/var/lib/omx/qualification")
             self.assertEqual(qual.pin_paths(), ["/usr/share/plugin-hostd/pins.d"])
         with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_DIR": "/q", "ZYNTHIAN_QUALIFICATION_PINS": "/a.pins:/b"}):
             self.assertEqual((qual.qualification_dir(), qual.pin_paths()), ("/q", ["/a.pins", "/b"]))
+
+    def test_unset_the_pins_are_the_ones_plugin_hostd_reads(self):
+        # The package's pins.d and the pin_file of plugin-hostd's config, where the qualification sync writes
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp)
+        with open(os.path.join(tmp, "plugin-hostd.conf"), "w") as f:
+            f.write("# settings\nmod_host /usr/local/bin/mod-host\npin_file /var/lib/omx/qualified.pins\n")
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": "", "ZYNTHIAN_PLUGIN_HOSTD_CONF": "",
+                                          "ZYNTHIAN_CONFIG_DIR": tmp}):
+            self.assertEqual(qual.pin_paths(), ["/usr/share/plugin-hostd/pins.d", "/var/lib/omx/qualified.pins"])
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": "",
+                                          "ZYNTHIAN_PLUGIN_HOSTD_CONF": os.path.join(tmp, "plugin-hostd.conf")}):
+            self.assertEqual(qual.pin_paths(), ["/usr/share/plugin-hostd/pins.d", "/var/lib/omx/qualified.pins"])
 
 
 class fact_readers(unittest.TestCase):
@@ -262,6 +275,16 @@ class pi5_records(unittest.TestCase):
         shown = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), show=True)
         self.assertEqual([(text, grey) for _, text, grey in shown][-2:],
                          [("3 Band EQ (PH)  hidden · refused", True), ("3 Band Splitter (PH)  hidden · refused", True)])
+
+    def test_a_refused_plugins_jalv_row_is_listed_after_the_qualified_ones(self):
+        engines = {"JV/Refused": {"TITLE": "Refused", "URL": "urn:r"}, "PH/Refused": {"TITLE": "Refused (PH)", "URL": "urn:r"},
+                   "ZY": {"TITLE": "ZynAddSubFX"}, "PH/Fast": {"TITLE": "Fast (PH)", "URL": "urn:f"}}
+        facts = {"urn:r": NO_FACTS._replace(pin="refused"), "urn:f": measured(1.0, rt=True, soaked=True)}
+        rows = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS))
+        self.assertEqual([(text, grey) for _, text, grey in rows],
+                         [("Fast (PH)  live · 1.0 ms · RT", False), ("ZynAddSubFX", False), ("Refused  refused", False)])
+        shown = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), show=True)
+        self.assertEqual([text for _, text, _ in shown][-2:], ["Refused  refused", "Refused (PH)  hidden · refused"])
 
 
 class record_reading(unittest.TestCase):

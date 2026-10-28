@@ -55,12 +55,12 @@ class plugin_engine_case(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def catalogue(self, setting=None, binary=None):
+    def catalogue(self, setting=None, binary=None, refused=()):
         env = {} if setting is None else {"ZYNTHIAN_PLUGIN_ENGINE": setting}
         with mock.patch.dict(os.environ, env):
             if setting is None:
                 os.environ.pop("ZYNTHIAN_PLUGIN_ENGINE", None)
-            return cat.add_catalogue(self.engines, clap=[], binary=binary or self.binary)
+            return cat.add_catalogue(self.engines, clap=[], binary=binary or self.binary, refused=set(refused))
 
     def menu(self, etype):
         return sorted(self.by_type[etype])
@@ -93,6 +93,22 @@ class plugin_engine_case(unittest.TestCase):
             self.catalogue(binary=os.path.join(os.path.dirname(self.binary), "absent"))
         self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp", "PH/ZamComp"])
         self.assertIn("not installed", logs.output[0])
+
+    def test_a_plugin_plugin_hostd_refuses_stays_on_jalv(self):
+        self.catalogue(refused=["urn:zamaudio:ZamComp"])
+        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"], "the refused one is offered once, through jalv")
+        self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"], "an accepted one is offered once, through plugin-hostd")
+        self.assertIn("PH/ZamComp", self.engines, "the PH entry stays known")
+
+    def test_the_refusals_come_from_the_pins_plugin_hostd_reads(self):
+        pins = os.path.join(os.path.dirname(self.binary), "qualified.pins")
+        with open(pins, "w") as f:
+            f.write("pin_set urn:surge surge.so=00 omx-layout/1:00 verdict=refused\npin_set urn:zamaudio:ZamComp z.so=00 omx-layout/1:00 verdict=in-process\n")
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": pins}):
+            os.environ.pop("ZYNTHIAN_PLUGIN_ENGINE", None)
+            cat.add_catalogue(self.engines, clap=[], binary=self.binary)
+        self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "ZY"])
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
 
     def test_midi_tools_stay_with_jalv(self):
         self.catalogue()

@@ -110,6 +110,16 @@ class engine_menu(unittest.TestCase):
         self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#grey"})
         self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
 
+    def test_a_refused_plugins_jalv_row_is_listed_after_the_qualified_ones(self):
+        # The catalogue leaves the jalv row of a plugin plugin-hostd refuses in the menu: it is offered, tagged
+        self.engines["JV/Refused"] = info("Refused Amp", "urn:q:refused", title="Refused Amp")
+        self.by_cat["Dynamics"]["JV/Refused"] = self.engines["JV/Refused"]
+        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0.0 ms · RT", "Linear EQ (PH)  studio · 21 ms · RT",
+                                        "Refused Amp  refused"])
+        self.screen.listbox.itemconfig.assert_not_called()
+        self.assertEqual(self.build("1")[2:], ["Refused Amp  refused", "Refused Amp (PH)  hidden · refused"])
+        self.screen.listbox.itemconfig.assert_called_once_with(3, {'fg': "#grey"})
+
     def test_an_unreadable_qualification_leaves_the_plain_menu(self):
         self.screen.qualification = mock.MagicMock()
         self.screen.qualification.refresh.side_effect = ValueError("broken")
