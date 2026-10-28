@@ -13,6 +13,7 @@ import sys
 import json
 import time
 import types
+import signal
 import socket
 import logging
 import tempfile
@@ -24,6 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FIXTURES = os.path.join(HERE, "fixtures", "plugin_hostd")
 FAKE = os.path.join(HERE, "fake_plugin_hostd.py")
+START_STUB = os.path.join(FIXTURES, "plugin-hostd-start")  # zynthian-sys's sbin/plugin-hostd-start.sh
 sys.path[:0] = [HERE, ROOT]
 # plugin-hostd's declared protocol, as its package installs it
 os.environ["ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR"] = os.path.join(FIXTURES, "protocol")
@@ -98,12 +100,15 @@ class plugin_hostd_case(unittest.TestCase):
         self.bin = os.path.join(self.tmp, "bin")
         os.mkdir(self.bin)
         os.symlink(sys.executable, os.path.join(self.bin, "python3"))
-        patcher = mock.patch.dict(os.environ, {"PATH": self.bin, "FAKE_HOSTD_JOURNAL": os.path.join(self.tmp, "journal")})
+        self.starts = os.path.join(self.tmp, "starts")
+        patcher = mock.patch.dict(os.environ, {
+            "PATH": self.bin, "FAKE_HOSTD_JOURNAL": os.path.join(self.tmp, "journal"),
+            "START_STUB_LOG": self.starts, "START_STUB_DIR": self.tmp})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.port = free_port()
         ph.daemon = ph.plugin_hostd_daemon(self.port)
-        ph.daemon.binary = os.path.join(self.tmp, "not-installed")
+        ph.daemon.start_script = os.path.join(self.tmp, "not-installed")
         ph.daemon.conf = os.path.join(self.tmp, "no.conf")
         self.addCleanup(lambda: (ph.daemon.stop(), ph.daemon.client.close()))
         ph._logged.clear()
@@ -149,6 +154,14 @@ class plugin_hostd_case(unittest.TestCase):
         chain.remove_processor(proc)
         proc.engine.stop()
 
+    def started(self):
+        """The runs of plugin-hostd-start.sh: its arguments and the PHD_CONF it was given."""
+        try:
+            with open(self.starts) as f:
+                return f.read().splitlines()
+        except FileNotFoundError:
+            return []
+
     def journal(self):
         try:
             with open(os.environ["FAKE_HOSTD_JOURNAL"]) as f:
@@ -160,24 +173,26 @@ class plugin_hostd_case(unittest.TestCase):
 class test_daemon(plugin_hostd_case):
 
     def test_starts_a_daemon_when_none_answers_and_stops_only_that_one(self):
-        ph.daemon.binary = FAKE
+        ph.daemon.start_script = START_STUB
         chain = self.chain()
         proc = self.add(chain, "PH/Amp")
-        started = ph.daemon.proc
+        started = ph.daemon.pid
         self.assertIsNotNone(started, "no daemon answered, so the engine starts one")
-        pids = {pid for pid, _ in self.journal()}
-        self.assertEqual(len(pids), 1)
-        self.assertNotEqual(pids, {str(os.getpid())}, "the add reached the started process")
-        self.assertIn([pids.pop(), "add urn:test:amp 1000"], self.journal())
+        self.assertEqual(self.started(), [f"{self.port} PHD_CONF={ph.daemon.conf}"],
+                         "through zynthian-sys's script, on the engine's port, with its config")
+        self.assertEqual({pid for pid, _ in self.journal()}, {str(started)}, "the add reached the started process")
+        self.assertIn([str(started), "add urn:test:amp 1000"], self.journal())
         self.remove(chain, proc)
-        self.assertIsNone(ph.daemon.proc)
-        self.assertIsNotNone(started.poll(), "the daemon it started is stopped with its last instance")
+        self.assertIsNone(ph.daemon.pid)
+        with self.assertRaises(ProcessLookupError, msg="the daemon it started is stopped with its last instance"):
+            os.kill(started, 0)
 
     def test_reuses_a_running_daemon_and_never_stops_it(self):
         fake = self.serve()
         chain = self.chain()
         proc = self.add(chain, "PH/Amp")
-        self.assertIsNone(ph.daemon.proc, "a daemon answered, so none is started")
+        self.assertIsNone(ph.daemon.pid, "a daemon answered, so none is started")
+        self.assertEqual(self.started(), [], "and the start script is not run")
         self.assertIn("add urn:test:amp 1000", fake.lines)
         self.remove(chain, proc)
         ph.daemon.stop()
@@ -222,16 +237,16 @@ class test_daemon(plugin_hostd_case):
         self.assertIsNone(client.sock, "a late reply is never read as the next one")
 
     def test_a_dead_daemon_is_restarted_and_its_instances_replayed(self):
-        ph.daemon.binary = FAKE
+        ph.daemon.start_script = START_STUB
         chain = self.chain()
         amp1, amp2 = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
         amp2.controllers_dict["gain"].set_value(4.5)
-        first = ph.daemon.proc
-        first.kill()
-        first.wait()
+        first = ph.daemon.pid
+        os.kill(first, signal.SIGKILL)
+        self.assertTrue(ph.daemon.wait_gone(5.0))
         amp1.controllers_dict["gain"].set_value(-2.0)
-        self.assertIsNot(ph.daemon.proc, first)
-        second = str(ph.daemon.proc.pid)
+        self.assertNotEqual(ph.daemon.pid, first)
+        second = str(ph.daemon.pid)
         lines = [line for pid, line in self.journal() if pid == second]
         for expected in ("add urn:test:amp 1000", "add urn:test:amp 1001", "param_set 1001 gain 4.5",
                          "chain 1 1000 1001"):
@@ -268,7 +283,6 @@ class test_protocol(plugin_hostd_case):
             self.assertEqual(ph.protocol.name(code), name)
         self.assertEqual(ph.CHAIN_FALLBACK_CODES, (-501, -519, -520, -521))
         self.assertEqual((ph.DESCRIPTOR_PENDING, ph.DESCRIPTOR_NONE), (-530, (-529, -531)))
-        self.assertEqual(ph.protocol.ready_line, "plugin-hostd ready!")
 
     def test_the_engine_types_no_reply_code(self):
         with open(ph.__file__) as f:
@@ -277,31 +291,85 @@ class test_protocol(plugin_hostd_case):
                          "a reply code in the engine's source is a retyped one")
 
     def test_without_the_protocol_files_there_is_no_daemon_to_trust(self):
-        empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"))
+        with self.assertLogs(level=logging.ERROR) as logs:
+            empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"), needs=ph.NEEDS)
         self.assertFalse(empty.loaded)
+        self.assertEqual(len(logs.records), 1, "said once, when the files are read")
+        self.assertIn(os.path.join(self.tmp, "none", "protocol.json"), logs.output[0])
         with mock.patch.object(ph, "protocol", empty):
-            with self.assertRaises(ph.plugin_hostd_down):
-                ph.daemon.ensure()
-
-    def test_ready_is_the_declared_line_not_a_port_that_answers(self):
-        ph.daemon.binary = FAKE
-        os.environ["FAKE_HOSTD_READY_DELAY"] = "0.6"
-        log = os.path.join(tempfile.gettempdir(), "plugin-hostd.log")
-        before = os.path.getsize(log) if os.path.exists(log) else 0
-        started = time.monotonic()
-        ph.daemon.ensure()
-        self.assertGreaterEqual(time.monotonic() - started, 0.5, "the port answered at once; the line came later")
-        with open(log, "rb") as f:
-            f.seek(before)
-            self.assertIn("plugin-hostd ready!", f.read().decode().splitlines())
-
-    def test_a_daemon_that_never_says_ready_is_down(self):
-        ph.daemon.binary = FAKE
-        os.environ["FAKE_HOSTD_READY_DELAY"] = "3"
-        with mock.patch.object(ph, "START_TIMEOUT", 0.5):
             with self.assertRaises(ph.plugin_hostd_down) as down:
                 ph.daemon.ensure()
-        self.assertIn("plugin-hostd ready!", str(down.exception))
+        self.assertIn(os.path.join(self.tmp, "none", "protocol.json"), str(down.exception),
+                      "the refusal names the file")
+
+    def test_mod_host_json_missing_is_a_failure_too(self):
+        directory = self.declared()
+        os.remove(os.path.join(directory, "mod-host.json"))
+        with self.assertLogs(level=logging.ERROR):
+            p = ph.zynthian_plugin_hostd_protocol.protocol(directory)
+        self.assertFalse(p.loaded)
+        self.assertIn(os.path.join(directory, "mod-host.json"), p.failure)
+
+    def test_a_name_the_engine_branches_on_and_the_files_do_not_declare_is_a_failure(self):
+        declared = [{"name": n, "macro": "PHD_ERR_" + n, "code": -700 - i} for i, n in enumerate(ph.NEEDS)
+                    if n != "CHAIN_MIXED_FORMAT" and not n.startswith("ERR_")]
+        host = [{"name": n, "value": -800 - i} for i, n in enumerate(ph.NEEDS) if n.startswith("ERR_")]
+        with self.assertLogs(level=logging.ERROR):
+            p = ph.zynthian_plugin_hostd_protocol.protocol(self.declared(declared, host_errors=host), needs=ph.NEEDS)
+        self.assertFalse(p.loaded)
+        self.assertIn("do not declare CHAIN_MIXED_FORMAT", p.failure)
+        with mock.patch.object(ph, "protocol", p):
+            with self.assertRaises(ph.plugin_hostd_down) as down:
+                ph.daemon.ensure()
+        self.assertIn("CHAIN_MIXED_FORMAT", str(down.exception))
+
+    def test_the_engine_reads_the_files_once_at_import(self):
+        with mock.patch.object(ph.zynthian_plugin_hostd_protocol, "read", side_effect=AssertionError("read again")):
+            self.serve()
+            self.add(self.chain(), "PH/Amp")
+
+    @unittest.skipUnless(os.path.isfile("/usr/share/plugin-hostd/protocol.json"), "plugin-hostd is not installed")
+    def test_the_fixture_says_what_the_installed_files_say(self):
+        installed = ph.zynthian_plugin_hostd_protocol.protocol("/usr/share/plugin-hostd", needs=ph.NEEDS)
+        self.assertTrue(installed.loaded, installed.failure)
+        for name, code in ph.protocol.codes.items():
+            self.assertEqual(installed.codes.get(name), code, f"the fixture retypes {name}")
+        readiness = [ph.zynthian_plugin_hostd_protocol.read("protocol.json", d)[0]["readiness"]
+                     for d in ("/usr/share/plugin-hostd", os.path.join(FIXTURES, "protocol"))]
+        self.assertEqual(readiness[0], readiness[1], "the start script stand-in waits for the installed line")
+
+    def test_ready_is_the_start_scripts_to_say(self):
+        """The engine waits for nothing of its own: zynthian-sys's script returns once the declared line is out."""
+        with open(ph.__file__) as f:
+            source = f.read()
+        self.assertNotIn("ready_line", source)
+        self.assertNotIn("readiness", source)
+        self.assertNotIn("Popen", source, "no daemon is started but by the script")
+
+    def test_a_start_script_that_fails_is_down_with_its_reason(self):
+        ph.daemon.start_script = START_STUB
+        os.environ["START_STUB_FAIL"] = "plugin-hostd did not print 'plugin-hostd ready!' in 10 s, see the log"
+        with self.assertRaises(ph.plugin_hostd_down) as down:
+            ph.daemon.ensure()
+        self.assertIn("did not print 'plugin-hostd ready!'", str(down.exception))
+        self.assertIsNone(ph.daemon.pid)
+
+    def test_without_the_start_script_there_is_no_daemon(self):
+        with self.assertRaises(ph.plugin_hostd_down) as down:
+            ph.daemon.ensure()
+        self.assertIn("not-installed is not installed", str(down.exception))
+
+    def test_a_daemon_the_script_found_running_is_not_stopped_by_the_engine(self):
+        """The script prints no PID for a daemon that was already up (a service, or another UI started it)."""
+        self.serve()
+        stub = os.path.join(self.bin, "already-running")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\necho \"plugin-hostd is already running on port $1\" >&2\n")
+        os.chmod(stub, 0o755)
+        ph.daemon.start_script = stub
+        with mock.patch.object(ph.daemon, "identify", return_value=False):
+            ph.daemon.ensure()
+        self.assertIsNone(ph.daemon.pid)
 
 
 class test_processor(plugin_hostd_case):

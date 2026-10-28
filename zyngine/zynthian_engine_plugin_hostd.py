@@ -19,6 +19,7 @@ import json
 import time
 import base64
 import shutil
+import signal
 import socket
 import logging
 import tarfile
@@ -40,7 +41,9 @@ FIRST_INSTANCE = 1000
 LAST_INSTANCE = 9989
 TIMEOUT = 5.0
 SLOW_TIMEOUT = 30.0  # add, chain, state_save and state_load spawn or move workers
-START_TIMEOUT = 10.0
+START_TIMEOUT = 10.0  # the wait for the daemon's declared line, in plugin-hostd-start.sh
+START_SCRIPT = os.path.join(os.environ.get("ZYNTHIAN_SYS_DIR", "/zynthian/zynthian-sys"), "sbin",
+                            "plugin-hostd-start.sh")
 DESCRIPTOR_WAIT = 5.0
 PROBE_TIMEOUT = 30.0
 # The worker rows whose chain is one JACK client, named like its head (measured on a Pi 5 with plugin-hostd
@@ -51,14 +54,18 @@ PROBE_TIMEOUT = 30.0
 ONE_CLIENT_ROWS = ("clap", "lv2-clap")
 STATE_FILE_RE = re.compile(r"^effect_(\d+)(?=\D|$)")
 
-# The reply codes and the readiness line are plugin-hostd's own declaration, never retyped here
-protocol = zynthian_plugin_hostd_protocol.protocol()
+# The reply codes are plugin-hostd's own declaration, never retyped here. They are read once, here; without the
+# files, or without a name below, the engine refuses to start and says which. Ready, the line the daemon declares,
+# is waited for by zynthian-sys's plugin-hostd-start.sh, the one place a plugin-hostd is started on a Zynthian.
+CHAIN_FALLBACK_NAMES = ("PLACEMENT_INVALID", "CHAIN_DUPLICATE", "CHAIN_INSTANCE_BUSY", "CHAIN_MIXED_FORMAT")
+DESCRIPTOR_NONE_NAMES = ("DESCRIPTOR_ABSENT", "DESCRIPTOR_SCAN_FAILED")
+NEEDS = CHAIN_FALLBACK_NAMES + DESCRIPTOR_NONE_NAMES + (
+    "DESCRIPTOR_PENDING", "ERR_INSTANCE_ALREADY_EXISTS", "ERR_INVALID_OPERATION", "ERR_MEMORY_ALLOCATION")
+protocol = zynthian_plugin_hostd_protocol.protocol(needs=NEEDS)
 ERROR_NAMES = protocol.names
-CHAIN_FALLBACK_CODES = tuple(protocol.codes[n] for n in (
-    "PLACEMENT_INVALID", "CHAIN_DUPLICATE", "CHAIN_INSTANCE_BUSY", "CHAIN_MIXED_FORMAT")) if protocol.loaded else ()
+CHAIN_FALLBACK_CODES = tuple(protocol.codes[n] for n in CHAIN_FALLBACK_NAMES) if protocol.loaded else ()
 DESCRIPTOR_PENDING = protocol.codes.get("DESCRIPTOR_PENDING")
-DESCRIPTOR_NONE = tuple(protocol.codes[n] for n in ("DESCRIPTOR_ABSENT", "DESCRIPTOR_SCAN_FAILED")) \
-    if protocol.loaded else ()
+DESCRIPTOR_NONE = tuple(protocol.codes[n] for n in DESCRIPTOR_NONE_NAMES) if protocol.loaded else ()
 
 _logged = set()
 
@@ -135,16 +142,16 @@ class plugin_hostd_client:
         return code, (words[2] if len(words) > 2 else "")
 
 
-# ---- The daemon: one per Zynthian, started when none answers, reused when one does ----
+# ---- The daemon: started when none answers, reused when one does (a service, or another UI started it) ----
 
 class plugin_hostd_daemon:
 
     def __init__(self, port=DEFAULT_PORT):
         self.client = plugin_hostd_client(port)
-        self.binary = "plugin-hostd"
+        self.start_script = START_SCRIPT
         self.conf = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_CONF",
                                    os.path.join(zynthian_engine.config_dir, "plugin-hostd.conf"))
-        self.proc = None  # set only when this process started the daemon
+        self.pid = None  # set only when this process started the daemon
         self.engines = {}  # instance number => engine
         self.chains = {}  # zynthian chain id => member instances declared to the daemon
         self.chain_refused = {}  # zynthian chain id => members the daemon refused to run together
@@ -166,32 +173,28 @@ class plugin_hostd_daemon:
             return False
 
     def ensure(self):
-        if not protocol.ready_line:
-            raise plugin_hostd_down("plugin-hostd's protocol.json is not installed: no declared readiness line")
+        if not protocol.loaded:
+            raise plugin_hostd_down(protocol.failure)
         if self.identify():
             return
-        binary = shutil.which(self.binary)
-        if not binary:
-            raise plugin_hostd_down(f"no daemon on port {self.client.port} and {self.binary} is not installed")
-        cmd = [binary, "-n", "-p", str(self.client.port)]
-        if os.path.isfile(self.conf):
-            cmd += ["-c", self.conf]
-        logging.info(f"Starting {' '.join(cmd)}")
-        log_path = os.path.join(tempfile.gettempdir(), "plugin-hostd.log")
-        with open(log_path, "ab") as log:
-            seen = log.tell()
-            self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
-        # Ready is the line the daemon declares, printed once both its ports accept
-        deadline = time.monotonic() + START_TIMEOUT
-        while time.monotonic() < deadline:
-            if self.proc.poll() is not None:
-                raise plugin_hostd_down(f"{binary} exited with {self.proc.returncode}, see plugin-hostd.log")
-            with open(log_path, "rb") as log:
-                log.seek(seen)
-                if protocol.ready_line in log.read().decode(errors="replace").splitlines():
-                    return
-            time.sleep(0.05)
-        raise plugin_hostd_down(f"{binary} did not print '{protocol.ready_line}' in {START_TIMEOUT}s")
+        port = self.client.port
+        if not os.access(self.start_script, os.X_OK):
+            raise plugin_hostd_down(f"no daemon on port {port} and {self.start_script} is not installed")
+        # The script returns once the daemon prints the line it declares for ready, and prints its PID; it
+        # prints none for a daemon that was already running, which is then not this process's to stop
+        cmd = [self.start_script, str(port)]
+        env = dict(os.environ, PHD_CONF=self.conf, READY_TIMEOUT=str(int(START_TIMEOUT)))
+        logging.info(f"Starting plugin-hostd: {' '.join(cmd)}")
+        try:
+            done = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env,
+                                  timeout=START_TIMEOUT + 5, start_new_session=True)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise plugin_hostd_down(f"{' '.join(cmd)} failed: {e}")
+        if done.returncode != 0:
+            why = (done.stderr.strip().splitlines() or [f"exit code {done.returncode}"])[-1]
+            raise plugin_hostd_down(f"{' '.join(cmd)} => {why}")
+        pid = done.stdout.strip()
+        self.pid = int(pid) if pid.isdigit() else None
 
     def call(self, line, timeout=TIMEOUT):
         """One command; if the connection is gone, bring the daemon back, replay and send it again."""
@@ -250,23 +253,38 @@ class plugin_hostd_daemon:
             logging.warning(f"plugin-hostd remove {instance} => {e}")
         if not self.engines:
             # The daemon serves one controller at a time: let another one in
-            self.stop() if self.proc else self.client.close()
+            self.stop() if self.pid else self.client.close()
 
     def stop(self):
         """Stop the daemon, only if this process started it."""
-        if not self.proc:
+        if not self.pid:
             return
         try:
             self.client.call("quit", 2.0)
         except (OSError, *FAILURES):
             pass
         self.client.close()
-        try:
-            self.proc.terminate()
-            self.proc.wait(5)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-        self.proc = None
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            if self.wait_gone(5.0):
+                break
+            try:
+                os.kill(self.pid, sig)
+            except OSError:
+                break
+        self.pid = None
+
+    def wait_gone(self, timeout):
+        """True once the daemon's process is gone: it is not this process's child, so it is polled."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                os.kill(self.pid, 0)
+            except ProcessLookupError:
+                return True
+            except OSError:
+                return False
+            time.sleep(0.05)
+        return False
 
 
 daemon = plugin_hostd_daemon()
@@ -676,7 +694,6 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                     dlist = json.load(f).get("controls", [])
                 for c in dlist:
                     dcontrols[str(c["id"])] = c
-                    dcontrols.setdefault(str(c.get("name")), c)
             except (OSError, ValueError, KeyError) as e:
                 logging.error(f"Can't read descriptor {path} => {e}")
         layout = panel_layout(path) if path else None
