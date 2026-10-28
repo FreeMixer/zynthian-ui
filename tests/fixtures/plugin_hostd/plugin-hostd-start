@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+# Stand-in for zynthian-sys's sbin/plugin-hostd-start.sh <port> [<feedback port>]: starts the fake daemon
+# (fake_plugin_hostd.py) on the port, returns once it prints the line protocol.json declares for ready and
+# prints its PID. Each run's arguments and PHD_CONF go to $START_STUB_LOG. START_STUB_FAIL makes it refuse
+# with that text on stderr, as the script does when the daemon stays silent.
+import os
+import sys
+import json
+import time
+import subprocess
+
+here = os.path.dirname(os.path.abspath(__file__))
+fake = os.path.join(os.path.dirname(os.path.dirname(here)), "fake_plugin_hostd.py")
+with open(os.environ["START_STUB_LOG"], "a") as f:
+    f.write(" ".join(sys.argv[1:]) + " PHD_CONF=" + os.environ.get("PHD_CONF", "") + "\n")
+if os.environ.get("START_STUB_FAIL"):
+    sys.stderr.write(os.environ["START_STUB_FAIL"] + "\n")
+    sys.exit(1)
+with open(os.path.join(here, "protocol", "protocol.json")) as f:
+    ready = json.load(f)["readiness"]["daemon_line"]
+log = os.path.join(os.environ["START_STUB_DIR"], f"plugin-hostd-{sys.argv[1]}.log")
+with open(log, "wb") as out:
+    proc = subprocess.Popen([fake, "-n", "-p", sys.argv[1]], stdin=subprocess.DEVNULL, stdout=out, stderr=out)
+deadline = time.monotonic() + float(os.environ.get("READY_TIMEOUT", "10"))
+while time.monotonic() < deadline:
+    with open(log, "rb") as f:
+        if ready in f.read().decode(errors="replace").splitlines():
+            print(proc.pid)
+            sys.exit(0)
+    time.sleep(0.02)
+sys.stderr.write(f"plugin-hostd did not print '{ready}'\n")
+sys.exit(1)

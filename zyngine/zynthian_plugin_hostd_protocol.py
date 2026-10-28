@@ -3,8 +3,9 @@
 # ZYNTHIAN PROJECT: plugin-hostd protocol (zynthian_plugin_hostd_protocol)
 #
 # What plugin-hostd declares about its own protocol, read from the files its package installs:
-# its reply codes, mod-host's reply codes and the line it prints when it is ready.
-# Nothing here is typed twice: a code is looked up by its name.
+# its reply codes and mod-host's. Nothing here is typed twice: a code is looked up by its name.
+# The line the daemon prints when it is ready is read by zynthian-sys's sbin/plugin-hostd-start.sh,
+# which starts every plugin-hostd on a Zynthian.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 #
@@ -32,7 +33,7 @@ def read(name, directory=None):
 
 
 class protocol:
-    """plugin-hostd's codes by name and by number and its readiness line, read once from both files.
+    """plugin-hostd's codes by name and by number, read once from both files.
     needs: the names the caller branches on. A file that is missing or unreadable, or a name neither file
     declares, leaves loaded False and failure saying which, logged once as an error here."""
 
@@ -52,7 +53,6 @@ class protocol:
             f"plugin-hostd's protocol files in {directory or PROTOCOL_DIR} do not declare {', '.join(missing)}"
             if missing else None)
         self.loaded = self.failure is None
-        self.ready_line = daemon.get("readiness", {}).get("daemon_line")
         if self.failure:
             logging.error("%s: the plugin-hostd engine will not start", self.failure)
 
