@@ -48,9 +48,9 @@ CATALOGUE = {
 
 # At 48 kHz in blocks of 256
 ROWS = {
-    "PH/" + CLEAN: "Clean Comp (PH)  live · 0 fr (decl 0) · RT clean · 85.2 ns/smp",
-    "PH/Locky": "Locky Verb (PH)  studio · 64 fr (decl 64) · RT violations · 30.5 ns/smp",
-    "JV/Locky": "Locky Verb  studio · 64 fr (decl 64) · RT violations · 30.5 ns/smp",
+    "PH/" + CLEAN: "Clean Comp (PH)  live · 0/0 fr · RT clean · 85.2 ns/smp",
+    "PH/Locky": "Locky Verb (PH)  studio · 64/64 fr · RT violations · 30.5 ns/smp",
+    "JV/Locky": "Locky Verb  studio · 64/64 fr · RT violations · 30.5 ns/smp",
     "PH/Analog": "Analog Delay (PH)  studio · 32 fr · RT unmeasured · cost unknown",
     "PH/Unprobed": "Unprobed Synth (PH)  not qualified",
     "PH/Untested": "Untested Chorus (PH)  not qualified",
@@ -73,7 +73,7 @@ class menu_figures(unittest.TestCase):
 
     def test_the_cost_is_the_one_measured_at_the_current_quantum(self):
         rows = dict((key, text) for key, text, _ in self.entries(quantum=512))
-        self.assertEqual(rows["PH/" + CLEAN], "Clean Comp (PH)  live · 0 fr (decl 0) · RT clean · 61 ns/smp")
+        self.assertEqual(rows["PH/" + CLEAN], "Clean Comp (PH)  live · 0/0 fr · RT clean · 61 ns/smp")
         self.assertTrue(rows["PH/Locky"].endswith("RT violations · cost unknown"), "no other quantum stands in")
         rows = dict((key, text) for key, text, _ in self.entries(rate=96000))
         self.assertEqual(rows["PH/" + CLEAN], "Clean Comp (PH)  live · latency unknown · RT clean · cost unknown")

@@ -17,7 +17,7 @@
 #   measured                    no or unknown  any      any        studio      studio · <figures>        no
 #
 # <figures> are the record's, as it holds them, at the current rate and quantum:
-#   latency  64 fr (decl 0)   measured frames, and the declared ones when the record has them; latency unknown
+#   latency  64/0 fr          measured/declared frames, 64 fr when the record declares none; latency unknown
 #   RT       RT clean         no allocation, lock, syscall or thread violation under the sweep;
 #                             RT violations: some; RT unmeasured: no interposer count, or not swept
 #   cost     19.4 ns/smp      the median ns per sample measured at this rate and quantum; cost unknown
@@ -72,8 +72,8 @@ def number_text(n):
 def latency_text(facts):
     if facts.frames is None:
         return "latency unknown"
-    declared = "" if facts.declared_frames is None else f" (decl {number_text(facts.declared_frames)})"
-    return f"{number_text(facts.frames)} fr{declared}"
+    declared = "" if facts.declared_frames is None else f"/{number_text(facts.declared_frames)}"
+    return f"{number_text(facts.frames)}{declared} fr"
 
 
 def cost_text(facts):

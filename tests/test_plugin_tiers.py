@@ -54,16 +54,16 @@ RULES = [
     ("isolated pin, fast", measured(1.2, rt=True, soaked=True, pin="isolated", frames=58, cost=19.4238), 5, "live",
      "live · 58 fr · RT clean · 19.4 ns/smp", False),
     ("suitable fast", measured(1.2, rt=True, soaked=True, frames=58, declared=64, cost=120.6), 5, "live",
-     "live · 58 fr (decl 64) · RT clean · 121 ns/smp", False),
+     "live · 58/64 fr · RT clean · 121 ns/smp", False),
     ("at the threshold", measured(5.0, rt=True, soaked=True, frames=240, declared=240), 5, "live",
-     "live · 240 fr (decl 240) · RT clean · cost unknown", False),
+     "live · 240/240 fr · RT clean · cost unknown", False),
     ("just over it", measured(5.01, rt=True, soaked=True, frames=241), 5, "studio", "studio · 241 fr · RT clean · cost unknown", False),
     ("suitable slow", measured(21.333, rt=True, soaked=True, frames=1024, cost=40), 5, "studio",
      "studio · 1024 fr · RT clean · 40 ns/smp", False),
     ("slow, under a raised threshold", measured(8.0, rt=True, soaked=True, frames=384), 10, "live",
      "live · 384 fr · RT clean · cost unknown", False),
     ("alloc in callback", measured(0.0, rt=False, soaked=True, frames=0, declared=0), 5, "studio",
-     "studio · 0 fr (decl 0) · RT violations · cost unknown", False),
+     "studio · 0/0 fr · RT violations · cost unknown", False),
     ("soak unmeasured", measured(1.333, rt=True, soaked=False, frames=64), 5, "live",
      "live · 64 fr · RT clean · cost unknown · unsoaked", False),
     ("no latency figure", measured(None, rt=True, soaked=True), 5, "studio", "studio · latency unknown · RT clean · cost unknown", False),
@@ -246,11 +246,11 @@ class pi5_records(unittest.TestCase):
         facts = self.q.facts(CLAP_DELAY, 48000)
         self.assertEqual((facts.record, facts.pin, facts.rt_safe, facts.soaked), (True, "in-process", True, False))
         self.assertAlmostEqual(facts.latency_ms, 1 * 1000 / 48000)   # measuredFrames 1 at 48 kHz
-        self.assertEqual(tiers.place(facts).tag, "live · 1 fr (decl 0) · RT clean · cost unknown · unsoaked")
+        self.assertEqual(tiers.place(facts).tag, "live · 1/0 fr · RT clean · cost unknown · unsoaked")
         self.assertEqual(tiers.place(facts).tier, "live")
         # the grid measured the cost at 48 kHz in blocks of 512: 47.9 ns per sample (median)
         self.assertEqual(tiers.place(self.q.facts(CLAP_DELAY, 48000, 512)).tag,
-                         "live · 1 fr (decl 0) · RT clean · 47.9 ns/smp · unsoaked")
+                         "live · 1/0 fr · RT clean · 47.9 ns/smp · unsoaked")
         self.assertIsNone(self.q.facts(CLAP_DELAY, 48000, 256).cost_ns, "no other quantum stands in")
 
     def test_a_latency_is_not_made_up_at_a_rate_the_record_did_not_measure(self):
@@ -288,7 +288,7 @@ class pi5_records(unittest.TestCase):
                     (LV2_DELAY, "Art Delay LV2 (PH)"), ("clap:/usr/lib/clap/none.clap#x", "None (PH)"))}
         rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000))
         self.assertEqual([text for _, text, _ in rows],
-                         ["Art Delay (PH)  live · 1 fr (decl 0) · RT clean · cost unknown · unsoaked",
+                         ["Art Delay (PH)  live · 1/0 fr · RT clean · cost unknown · unsoaked",
                           "Art Delay LV2 (PH)  studio · latency unknown · RT clean · cost unknown · unsoaked",
                           "None (PH)  not qualified"])
         shown = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), show=True)
