@@ -39,10 +39,14 @@ if "zyngine" not in sys.modules:
 # zynthian_lv2 needs lilv: a stand-in that knows the ports of one plugin
 LV2_PORTS = {"urn:test:amp": {0: {"symbol": "gain", "name": "Gain", "range": {"min": -90, "max": 90}, "value": 0,
                                   "is_integer": False, "is_toggled": False}}}
-_lv2 = types.ModuleType("zyngine.zynthian_lv2")
-_lv2.get_plugin_ports = lambda uri: LV2_PORTS.get(uri, {})
-_lv2.engines_by_type = {"MIDI Synth": {}, "Audio Effect": {}}
-sys.modules["zyngine.zynthian_lv2"] = _lv2
+# One stand-in per process: test_convert_snapshots_to_ph imports this file again under its bare name, and the
+# catalogue must see the same registry as every copy of these tests
+_lv2 = sys.modules.get("zyngine.zynthian_lv2")
+if _lv2 is None:
+    _lv2 = types.ModuleType("zyngine.zynthian_lv2")
+    _lv2.get_plugin_ports = lambda uri: LV2_PORTS.get(uri, {})
+    _lv2.engines_by_type = {}
+    sys.modules["zyngine.zynthian_lv2"] = _lv2
 sys.modules["zyngine"].zynthian_lv2 = _lv2
 
 from zyngine import zynthian_engine_plugin_hostd as ph  # noqa: E402
@@ -106,6 +110,9 @@ class plugin_hostd_case(unittest.TestCase):
         ph.layout_cache.clear()
         ph.probe_cache.clear()
         ph.DESCRIPTOR_WAIT = 0.5
+        # The menus' lists by type start empty for every test, in place: the registry is shared
+        _lv2.engines_by_type.clear()
+        _lv2.engines_by_type.update({"MIDI Synth": {}, "Audio Effect": {}})
         # The catalogue makes the PH entries the tests add, from jalv's LV2 ones and the CLAP scan
         self.info = {"JV/Amp": lv2_info("Amp", "urn:test:amp"), "JV/NoPin": lv2_info("NoPin", "urn:test:nopin"),
                      "JV/Big": lv2_info("Big", "urn:test:big")}
