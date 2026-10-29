@@ -16,13 +16,17 @@
 #   measured                    yes      > live ms      any        studio      studio · <figures>        no
 #   measured                    no or unknown  any      any        studio      studio · <figures>        no
 #
-# <figures> are the record's, as it holds them, at the current rate and quantum:
-#   latency  64/0 fr          measured/declared frames, 64 fr when the record declares none; latency unknown
-#   RT       RT clean         no allocation, lock, syscall or thread violation under the sweep;
-#                             runs alone: some, so plugin-hostd isolates it in its own worker, never
-#                             grouped with RT-safe plugins (it is not refused); RT unmeasured: no
+# <figures> are the record's, as it holds them, at the current rate and quantum, separated by a space
+# and short enough that a row of half the 1024 px screen shows all three after a long title:
+#   latency  64/0fr           measured/declared frames, 64fr when the record declares none; lat? unknown
+#   RT       RT-ok            no allocation, lock, syscall or thread violation under the sweep;
+#                             RT-alone: some, so plugin-hostd isolates it in its own worker, never
+#                             grouped with RT-safe plugins (it is not refused); RT-?: no
 #                             interposer count, or not swept
-#   cost     19.4 ns/smp      the median ns per sample measured at this rate and quantum; cost unknown
+#   cost     19.4ns           the median ns per sample measured at this rate and quantum; cost? unknown
+# The record read is the one of the format the row stands for: the LV2 uri's for an LV2 row, the
+# clap:<path>#<id> one for a CLAP row. A run with interposer events or process errors is RT-alone
+# even where the allocation, lock and syscall counts read zero.
 #
 # live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
@@ -50,7 +54,7 @@ LIVE_MAX_MS = 5.0
 RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "refused": 3, "hidden": 4}  # entries that are not plugins rank as unverified
 SEP = " · "
 ORDERS = ("tier", "name", "cost", "latency", "rt")
-RT_WORDS = {True: "RT clean", False: "runs alone", None: "RT unmeasured"}
+RT_WORDS = {True: "RT-ok", False: "RT-alone", None: "RT-?"}
 
 Placement = namedtuple("Placement", "tier tag hidden reason")
 
@@ -73,13 +77,13 @@ def number_text(n):
 
 def latency_text(facts):
     if facts.frames is None:
-        return "latency unknown"
+        return "lat?"
     declared = "" if facts.declared_frames is None else f"/{number_text(facts.declared_frames)}"
-    return f"{number_text(facts.frames)}{declared} fr"
+    return f"{number_text(facts.frames)}{declared}fr"
 
 
 def cost_text(facts):
-    return "cost unknown" if facts.cost_ns is None else f"{number_text(facts.cost_ns)} ns/smp"
+    return "cost?" if facts.cost_ns is None else f"{number_text(facts.cost_ns)}ns"
 
 
 def place(facts, live_ms=LIVE_MAX_MS):
@@ -94,7 +98,7 @@ def place(facts, live_ms=LIVE_MAX_MS):
     words = [tier, latency_text(facts), RT_WORDS[facts.rt_safe], cost_text(facts)]
     if facts.soaked is False:
         words.append("unsoaked")
-    return Placement(tier, SEP.join(words), False, None)
+    return Placement(tier, " ".join(words), False, None)
 
 
 def figure(facts, order):
