@@ -52,27 +52,27 @@ RULES = [
     ("hung", measured(None, rt=None, hung=True), 5, None, "hidden · hung", True),
     ("refused and crashed", measured(0.0, pin="refused", crashed=True), 5, None, "hidden · refused", True),
     ("isolated pin, fast", measured(1.2, rt=True, soaked=True, pin="isolated", frames=58, cost=19.4238), 5, "live",
-     "live · 58 fr · RT clean · 19.4 ns/smp", False),
+     "live 58fr RT-ok 19.4ns", False),
     ("suitable fast", measured(1.2, rt=True, soaked=True, frames=58, declared=64, cost=120.6), 5, "live",
-     "live · 58/64 fr · RT clean · 121 ns/smp", False),
+     "live 58/64fr RT-ok 121ns", False),
     ("at the threshold", measured(5.0, rt=True, soaked=True, frames=240, declared=240), 5, "live",
-     "live · 240/240 fr · RT clean · cost unknown", False),
-    ("just over it", measured(5.01, rt=True, soaked=True, frames=241), 5, "studio", "studio · 241 fr · RT clean · cost unknown", False),
+     "live 240/240fr RT-ok cost?", False),
+    ("just over it", measured(5.01, rt=True, soaked=True, frames=241), 5, "studio", "studio 241fr RT-ok cost?", False),
     ("suitable slow", measured(21.333, rt=True, soaked=True, frames=1024, cost=40), 5, "studio",
-     "studio · 1024 fr · RT clean · 40 ns/smp", False),
+     "studio 1024fr RT-ok 40ns", False),
     ("slow, under a raised threshold", measured(8.0, rt=True, soaked=True, frames=384), 10, "live",
-     "live · 384 fr · RT clean · cost unknown", False),
+     "live 384fr RT-ok cost?", False),
     ("alloc in callback", measured(0.0, rt=False, soaked=True, frames=0, declared=0), 5, "studio",
-     "studio · 0/0 fr · runs alone · cost unknown", False),
+     "studio 0/0fr RT-alone cost?", False),
     ("soak unmeasured", measured(1.333, rt=True, soaked=False, frames=64), 5, "live",
-     "live · 64 fr · RT clean · cost unknown · unsoaked", False),
-    ("no latency figure", measured(None, rt=True, soaked=True), 5, "studio", "studio · latency unknown · RT clean · cost unknown", False),
+     "live 64fr RT-ok cost? unsoaked", False),
+    ("no latency figure", measured(None, rt=True, soaked=True), 5, "studio", "studio lat? RT-ok cost?", False),
     ("RT-safety unmeasured", measured(1.0, rt=None, soaked=True, frames=48), 5, "studio",
-     "studio · 48 fr · RT unmeasured · cost unknown", False),
+     "studio 48fr RT-? cost?", False),
     ("nothing at this rate, live at the worst", measured(None, worst=1.333, rt=True), 5, "live",
-     "live · latency unknown · RT clean · cost unknown", False),
+     "live lat? RT-ok cost?", False),
     ("fast here, slow at the worst rate", measured(2.0, worst=21.0, rt=True, frames=96), 5, "studio",
-     "studio · 96 fr · RT clean · cost unknown", False),
+     "studio 96fr RT-ok cost?", False),
 ]
 
 
@@ -156,14 +156,14 @@ class fact_readers(unittest.TestCase):
 # The fixture records and pins, at 48 kHz and at 44.1 kHz: what each plugin's tag reads. A rate the
 # document did not measure shows no latency, whatever its scaling class says
 FIXTURE_TAGS = {
-    "urn:q:fast": ("live · 0 fr · RT clean · cost unknown", "live · latency unknown · RT clean · cost unknown"),
-    "urn:q:slow": ("studio · 1024 fr · RT clean · cost unknown", "studio · latency unknown · RT clean · cost unknown"),
-    "urn:q:alloc": ("studio · 0 fr · runs alone · cost unknown", "studio · latency unknown · runs alone · cost unknown"),
+    "urn:q:fast": ("live 0fr RT-ok cost?", "live lat? RT-ok cost?"),
+    "urn:q:slow": ("studio 1024fr RT-ok cost?", "studio lat? RT-ok cost?"),
+    "urn:q:alloc": ("studio 0fr RT-alone cost?", "studio lat? RT-alone cost?"),
     "urn:q:refused": ("hidden · refused", "hidden · refused"),
     "urn:q:crashed": ("hidden · crashed", "hidden · crashed"),
     "urn:q:hung": ("hidden · hung", "hidden · hung"),
-    "urn:q:unsoaked": ("live · 64 fr · RT clean · cost unknown · unsoaked",
-                       "live · latency unknown · RT clean · cost unknown · unsoaked"),
+    "urn:q:unsoaked": ("live 64fr RT-ok cost? unsoaked",
+                       "live lat? RT-ok cost? unsoaked"),
     "urn:q:none": ("not qualified", "not qualified"),
     "clap:/usr/lib/clap/test.clap#org.test.synth": ("hidden · refused", "hidden · refused"),
 }
@@ -246,23 +246,23 @@ class pi5_records(unittest.TestCase):
         facts = self.q.facts(CLAP_DELAY, 48000)
         self.assertEqual((facts.record, facts.pin, facts.rt_safe, facts.soaked), (True, "in-process", True, False))
         self.assertAlmostEqual(facts.latency_ms, 1 * 1000 / 48000)   # measuredFrames 1 at 48 kHz
-        self.assertEqual(tiers.place(facts).tag, "live · 1/0 fr · RT clean · cost unknown · unsoaked")
+        self.assertEqual(tiers.place(facts).tag, "live 1/0fr RT-ok cost? unsoaked")
         self.assertEqual(tiers.place(facts).tier, "live")
         # the grid measured the cost at 48 kHz in blocks of 512: 47.9 ns per sample (median)
         self.assertEqual(tiers.place(self.q.facts(CLAP_DELAY, 48000, 512)).tag,
-                         "live · 1/0 fr · RT clean · 47.9 ns/smp · unsoaked")
+                         "live 1/0fr RT-ok 47.9ns unsoaked")
         self.assertIsNone(self.q.facts(CLAP_DELAY, 48000, 256).cost_ns, "no other quantum stands in")
 
     def test_a_latency_is_not_made_up_at_a_rate_the_record_did_not_measure(self):
         facts = self.q.facts(CLAP_DELAY, 96000)
         self.assertIsNone(facts.latency_ms)
         self.assertAlmostEqual(facts.worst_latency_ms, 1 * 1000 / 48000)
-        self.assertEqual(tiers.place(facts).tag, "live · latency unknown · RT clean · cost unknown · unsoaked")
+        self.assertEqual(tiers.place(facts).tag, "live lat? RT-ok cost? unsoaked")
 
     def test_an_lv2_record_without_a_latency_reading_is_studio_and_says_no_latency(self):
         facts = self.q.facts(LV2_DELAY, 48000)
         self.assertEqual((facts.latency_ms, facts.worst_latency_ms, facts.rt_safe), (None, None, True))
-        self.assertEqual(tiers.place(facts).tag, "studio · latency unknown · RT clean · cost unknown · unsoaked")
+        self.assertEqual(tiers.place(facts).tag, "studio lat? RT-ok cost? unsoaked")
 
     def test_the_interposer_counts_decide_rt_not_the_pin(self):
         facts = self.q.facts(CLAP_EQ, 48000)      # 512 locks in the run
@@ -288,8 +288,8 @@ class pi5_records(unittest.TestCase):
                     (LV2_DELAY, "Art Delay LV2 (PH)"), ("clap:/usr/lib/clap/none.clap#x", "None (PH)"))}
         rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000))
         self.assertEqual([text for _, text, _ in rows],
-                         ["Art Delay (PH)  live · 1/0 fr · RT clean · cost unknown · unsoaked",
-                          "Art Delay LV2 (PH)  studio · latency unknown · RT clean · cost unknown · unsoaked",
+                         ["Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked",
+                          "Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked",
                           "None (PH)  not qualified"])
         shown = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), show=True)
         self.assertEqual([(text, grey) for _, text, grey in shown][-2:],
@@ -301,7 +301,7 @@ class pi5_records(unittest.TestCase):
         facts = {"urn:r": NO_FACTS._replace(pin="refused"), "urn:f": measured(1.0, rt=True, soaked=True, frames=48)}
         rows = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS))
         self.assertEqual([(text, grey) for _, text, grey in rows],
-                         [("Fast (PH)  live · 48 fr · RT clean · cost unknown", False), ("ZynAddSubFX", False),
+                         [("Fast (PH)  live 48fr RT-ok cost?", False), ("ZynAddSubFX", False),
                           ("Refused  refused", False)])
         shown = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), show=True)
         self.assertEqual([text for _, text, _ in shown][-2:], ["Refused  refused", "Refused (PH)  hidden · refused"])
@@ -383,11 +383,11 @@ class menu_order(unittest.TestCase):
 
     def test_live_first_then_studio_then_the_rest_and_no_hidden_ones(self):
         self.assertEqual(self.entries(False), [
-            ("PH/Fast", "Fast Comp (PH)  live · 0 fr · RT clean · cost unknown", False),
-            ("PH/Unsoaked", "New Gate (PH)  live · 64 fr · RT clean · cost unknown · unsoaked", False),
-            ("JV/Fast", "Fast Comp  live · 0 fr · RT clean · cost unknown", False),
-            ("PH/Slow", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown", False),
-            ("PH/Alloc", "Alloc Verb (PH)  studio · 0 fr · runs alone · cost unknown", False),
+            ("PH/Fast", "Fast Comp (PH)  live 0fr RT-ok cost?", False),
+            ("PH/Unsoaked", "New Gate (PH)  live 64fr RT-ok cost? unsoaked", False),
+            ("JV/Fast", "Fast Comp  live 0fr RT-ok cost?", False),
+            ("PH/Slow", "Linear EQ (PH)  studio 1024fr RT-ok cost?", False),
+            ("PH/Alloc", "Alloc Verb (PH)  studio 0fr RT-alone cost?", False),
             ("PH/None", "Untested Chorus (PH)  not qualified", False),
             ("AP", "Audio Player", False),
         ])

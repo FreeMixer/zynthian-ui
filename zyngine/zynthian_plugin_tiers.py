@@ -54,7 +54,7 @@ LIVE_MAX_MS = 5.0
 RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "refused": 3, "hidden": 4}  # entries that are not plugins rank as unverified
 SEP = " · "
 ORDERS = ("tier", "name", "cost", "latency", "rt")
-RT_WORDS = {True: "RT clean", False: "runs alone", None: "RT unmeasured"}
+RT_WORDS = {True: "RT-ok", False: "RT-alone", None: "RT-?"}
 
 Placement = namedtuple("Placement", "tier tag hidden reason")
 
@@ -77,13 +77,13 @@ def number_text(n):
 
 def latency_text(facts):
     if facts.frames is None:
-        return "latency unknown"
+        return "lat?"
     declared = "" if facts.declared_frames is None else f"/{number_text(facts.declared_frames)}"
-    return f"{number_text(facts.frames)}{declared} fr"
+    return f"{number_text(facts.frames)}{declared}fr"
 
 
 def cost_text(facts):
-    return "cost unknown" if facts.cost_ns is None else f"{number_text(facts.cost_ns)} ns/smp"
+    return "cost?" if facts.cost_ns is None else f"{number_text(facts.cost_ns)}ns"
 
 
 def place(facts, live_ms=LIVE_MAX_MS):
@@ -98,7 +98,7 @@ def place(facts, live_ms=LIVE_MAX_MS):
     words = [tier, latency_text(facts), RT_WORDS[facts.rt_safe], cost_text(facts)]
     if facts.soaked is False:
         words.append("unsoaked")
-    return Placement(tier, SEP.join(words), False, None)
+    return Placement(tier, " ".join(words), False, None)
 
 
 def figure(facts, order):
