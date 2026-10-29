@@ -1,0 +1,29 @@
+name: tests
+
+# FreeMixer's fork only: tests/ on every pull request and every push to vangelis, in Debian trixie as the Pi runs it.
+# The tests import the standard library, the repository's own modules and yaml; a test that needs what only a
+# Zynthian has (tkinter for the UI start, an installed plugin-hostd) skips, as it does off the device.
+on:
+  pull_request:
+  push:
+    branches: [vangelis]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: python3 -m pytest tests/ (debian:trixie)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    steps:
+      - name: Install Python, pytest and the modules the tests import
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends python3 python3-pytest python3-yaml
+
+      - uses: actions/checkout@v4
+
+      - name: python3 -m pytest -q tests/
+        run: python3 -m pytest -q -rs tests/
