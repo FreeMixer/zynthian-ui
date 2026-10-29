@@ -259,6 +259,23 @@ class pi5_records(unittest.TestCase):
         self.assertAlmostEqual(facts.worst_latency_ms, 1 * 1000 / 48000)
         self.assertEqual(tiers.place(facts).tag, "live lat? RT-ok cost? unsoaked")
 
+    def test_a_clap_record_with_violations_reads_runs_alone_by_its_own_key(self):
+        self.assertIs(self.q.facts(CLAP_EQ, 48000, 512).rt_safe, False)
+        self.assertEqual(tiers.place(self.q.facts(CLAP_EQ, 48000, 512)._replace(pin=None)).tag, "studio 0/0fr RT-alone 17.7ns unsoaked")
+        self.assertIs(self.q.facts(LV2_DELAY, 48000).rt_safe, True, "the LV2 record of the same plugin is its own row's")
+
+    def test_a_clap_record_whose_counts_are_zero_but_whose_run_says_violations_is_not_clean(self):
+        with open(os.path.join(PI5, "records", "studio.kx.distrho.MVerb@unversioned-68d906c120d6.default.qualification.json")) as f:
+            rec = json.load(f)
+        for p in rec["measurements"]["grid"]:
+            p["rtSafety"].update(locks=0)
+        entry = qual.record_entry(rec)
+        self.assertIs(qual.facts_of((entry[0], entry[1], entry[2]), None, 48000, 512).rt_safe, False, "the events say so")
+        for p in rec["measurements"]["grid"]:
+            p["rtSafety"]["events"] = []
+        entry = qual.record_entry(rec)
+        self.assertIs(qual.facts_of((entry[0], entry[1], entry[2]), None, 48000, 512).rt_safe, True)
+
     def test_an_lv2_record_without_a_latency_reading_is_studio_and_says_no_latency(self):
         facts = self.q.facts(LV2_DELAY, 48000)
         self.assertEqual((facts.latency_ms, facts.worst_latency_ms, facts.rt_safe), (None, None, True))
