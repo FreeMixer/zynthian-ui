@@ -276,7 +276,31 @@ class fake_plugin_hostd:
         key, name, _ = presets[int(index)]
         return f"resp 0 {key} {name}"
 
+    def verb_preset_save(self, instance, path, *name):
+        # what omx-clap-host writes for preset_save <N> <file> <name>: the file, its name the rest of the line (one
+        # quoted word as sent), its parameters the instance's values; a preset file there keeps its other members
+        n = int(instance)
+        if not path.startswith("/") or not name:
+            return "resp -104 PRESET_INVALID"
+        doc = {}
+        if os.path.exists(path):
+            with open(path) as f:
+                doc = json.load(f)
+        doc.update({"format": "org.openmixer.preset/2", "plugin": {"id": self.instances[n], "version": "1",
+                    "fingerprint": "omx-layout/1:" + "0" * 64}, "name": " ".join(name).strip('"'), "carries": "params",
+                    "params": [{"symbol": s, "unit": "", "value": v} for s, v in self.params[n].items()]})
+        with open(path, "w") as f:
+            json.dump(doc, f)
+        return "resp 0"
+
     def verb_preset_load(self, instance, key):
+        if key.startswith("/"):
+            with open(key) as f:
+                doc = json.load(f)
+            if doc["plugin"]["id"] != self.instances[int(instance)]:
+                return "resp -104 PRESET_PLUGIN_CHANGED"
+            self.params[int(instance)].update({p["symbol"]: p["value"] for p in doc["params"]})
+            return "resp 0"
         for k, _, values in self.plugin(instance)["presets"] or []:
             if k == key:
                 self.params[int(instance)].update(values)
