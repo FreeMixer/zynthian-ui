@@ -153,6 +153,9 @@ def record_entry(rec):
             values = [r.get(key) for r in points]
             if all(isinstance(v, (int, float)) for v in values):
                 counts[name] = sum(values)
+        for key, name in (("events", "eventsInRun"), ("processErrors", "processErrorsInRun")):
+            counts[name] = sum(len(v) if isinstance(v, list) else v if isinstance(v, (int, float)) else 0
+                               for v in (r.get(key) for r in points))
         plugin["rtSafety"] = {"interposer": True, "swept": all(r.get("swept") is True for r in points),
                               "sweepApplicable": any(r.get("sweepApplicable") is True for r in points), **counts}
     stability = {}
@@ -284,7 +287,7 @@ def rt_safe(plugin):
     counts = [rt.get(k) for k in ("allocationsInRun", "locksInRun", "syscallsInRun")]
     if not rt.get("interposer") or any(c is None for c in counts):
         return None
-    if any(counts) or rt.get("threadViolationsInRun"):
+    if any(counts) or rt.get("threadViolationsInRun") or rt.get("eventsInRun") or rt.get("processErrorsInRun"):
         return False
     return True if rt.get("swept") or rt.get("sweepApplicable") is False else None
 

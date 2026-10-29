@@ -25,8 +25,8 @@
 #                             interposer count, or not swept
 #   cost     19.4ns           the median ns per sample measured at this rate and quantum; cost? unknown
 # The record read is the one of the format the row stands for: the LV2 uri's for an LV2 row, the
-# clap:<path>#<id> one for a CLAP row. A record whose verdict is hosting.rt-safety.violations-in-run
-# is RT-alone whatever its counts say.
+# clap:<path>#<id> one for a CLAP row. A run with interposer events or process errors is RT-alone
+# even where the allocation, lock and syscall counts read zero.
 #
 # live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
