@@ -65,8 +65,8 @@ def load_screen():
 screen_module = load_screen()
 
 
-FAST = "Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp"
-SLOW = "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown"
+FAST = "Fast Comp (PH)  live 0fr RT-ok 40ns"
+SLOW = "Linear EQ (PH)  studio 1024fr RT-ok cost?"
 
 
 def info(name, url, enabled=True, title=None):
@@ -106,12 +106,12 @@ class engine_menu(unittest.TestCase):
         return [row[2] for row in self.screen.filled]
 
     def test_the_menu_is_tagged_and_ordered_and_hides_the_refused_and_crashed(self):
-        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown"])
+        self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?"])
         self.assertEqual(self.screen.engine_cats, ["Dynamics"], "a category of hidden plugins only is not listed")
         self.screen.listbox.itemconfig.assert_not_called()
 
     def test_shown_the_hidden_ones_are_greyed(self):
-        self.assertEqual(self.build("1"), ["Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown",
+        self.assertEqual(self.build("1"), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
                                            "Refused Amp (PH)  hidden · refused"])
         self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#grey"})
         self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
@@ -120,7 +120,7 @@ class engine_menu(unittest.TestCase):
         # The catalogue leaves the jalv row of a plugin plugin-hostd refuses in the menu: it is offered, tagged
         self.engines["JV/Refused"] = info("Refused Amp", "urn:q:refused", title="Refused Amp")
         self.by_cat["Dynamics"]["JV/Refused"] = self.engines["JV/Refused"]
-        self.assertEqual(self.build(), ["Fast Comp (PH)  live · 0 fr · RT clean · 40 ns/smp", "Linear EQ (PH)  studio · 1024 fr · RT clean · cost unknown",
+        self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
                                         "Refused Amp  refused"])
         self.screen.listbox.itemconfig.assert_not_called()
         self.assertEqual(self.build("1")[2:], ["Refused Amp  refused", "Refused Amp (PH)  hidden · refused"])
@@ -140,7 +140,7 @@ class engine_menu(unittest.TestCase):
             cb("\u2610 Latency", options["\u2610 Latency"])
         self.screen.fill_list()
         self.assertEqual([row[2] for row in self.screen.filled],
-                         [FAST, "Linear EQ  studio · 1024 fr · RT clean · cost unknown", SLOW])
+                         [FAST, "Linear EQ  studio 1024fr RT-ok cost?", SLOW])
         self.screen.show_menu()
         options = self.screen.zyngui.screens['option'].config.call_args.args[1]
         self.assertIn("\u2612 Latency", options)
