@@ -876,23 +876,52 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                 if value:
                     zctrl.set_value(float(value), False)
 
-    # ---- Presets: the ones the plugin lists through the daemon ----
+    # ---- Presets ----
+    # An LV2 plugin's are the ones Zynthian keeps for it under jalv: the banks of its bundle and the user's banks under
+    # presets/lv2, from the same cache, and each loads by its URI through the daemon, on whichever worker holds the
+    # instance. A CLAP plugin's are its factory presets as the daemon lists them (preset_list, preset_get). A plugin with
+    # none shows one row that says so, which loads nothing.
+
+    NO_PRESETS = "No presets"
+
+    def is_lv2(self):
+        return not self.plugin_uri.startswith("clap:")
+
+    def lv2_preset_info(self):
+        from zyngine import zynthian_lv2
+        try:
+            return zynthian_lv2.get_plugin_presets_cache(self.plugin_name) or {}
+        except Exception as e:
+            log_once(("presets", self.nickname), "no LV2 presets cache for %s: %s", self.plugin_name, e)
+            return {}
 
     def get_bank_list(self, processor=None):
-        return [("", None, "Presets", None)]
+        if self.is_lv2():
+            banks = [(str(info["bank_url"]) if info.get("bank_url") else "", None, label, None)
+                     for label, info in self.lv2_preset_info().items() if info.get("presets")]
+            return banks or [("", None, "Presets", None)]
+        return [("", None, "Factory", None)]
 
     def set_bank(self, processor, bank):
         return True
 
     def get_preset_list(self, bank, processor=None):
         presets = []
-        try:
-            for i in range(daemon.call(f"preset_list {self.instance}")[0]):
-                key, _, name = daemon.call(f"preset_get {self.instance} {i}")[1].partition(" ")
-                presets.append([key, None, name or key, ""])
-        except FAILURES as e:
-            log_once(("presets", self.nickname), "plugin-hostd lists no presets for %s: %s", self.plugin_name, e)
-        return presets
+        if self.is_lv2():
+            info = self.lv2_preset_info().get(bank[2] if bank else None, {})
+            presets = [[p["url"], None, p["label"].replace("_", " ").strip(), bank[0]] for p in info.get("presets", [])]
+        else:
+            try:
+                for i in range(daemon.call(f"preset_list {self.instance}")[0]):
+                    key, _, name = daemon.call(f"preset_get {self.instance} {i}")[1].partition(" ")
+                    presets.append([key, None, name or key, ""])
+            except FAILURES as e:
+                log_once(("presets", self.nickname), "plugin-hostd lists no presets for %s: %s", self.plugin_name, e)
+        return presets or [["", None, self.NO_PRESETS, ""]]
+
+    def is_preset_user(self, preset):
+        my_data = os.environ.get("ZYNTHIAN_MY_DATA_DIR", "/zynthian/zynthian-my-data")
+        return isinstance(preset[0], str) and preset[0].startswith(f"file://{my_data}/presets/lv2/")
 
     def set_preset(self, processor, preset, preload=False):
         if not preset or not preset[0] or self.send(f"preset_load {self.instance} {preset[0]}") is None:
