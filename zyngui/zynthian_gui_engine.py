@@ -25,6 +25,7 @@
 
 import tkinter
 import logging
+import importlib
 from time import sleep
 
 # Zynthian specific modules
@@ -32,7 +33,8 @@ from zyngine import *
 from zyngine import zynthian_lv2
 from zyngine import zynthian_plugin_hostd_catalogue
 from zyngine import zynthian_plugin_hostd_estimate
-from zyngine import zynthian_engine_plugin_hostd
+# The module: zyngine's package exports the engine class under the same name
+plugin_hostd = importlib.import_module("zyngine.zynthian_engine_plugin_hostd")
 from zyngine import zynthian_plugin_qualification
 from zyngine import zynthian_plugin_tiers
 from zyngui import zynthian_gui_config
@@ -90,7 +92,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.list_order = "tier"  # one of zynthian_plugin_tiers.ORDERS
         self.hosted_only = False  # list only the plugins plugin-hostd runs
         # The chain's figures with the highlighted plugin in it, asked of plugin-hostd off this thread
-        self.estimator = zynthian_plugin_hostd_estimate.estimator(zynthian_engine_plugin_hostd.estimate)
+        self.estimator = zynthian_plugin_hostd_estimate.estimator(plugin_hostd.estimate)
         self.estimate_key = None
         self.estimate_text = ""
 
@@ -389,12 +391,12 @@ class zynthian_gui_engine(zynthian_gui_selector):
         rests; the answer is shown when it comes, and the list is never waited for."""
         refs = []
         try:
-            fmt = zynthian_engine_plugin_hostd.audio_format(self.zyngui.state_manager)
+            fmt = plugin_hostd.audio_format(self.zyngui.state_manager)
             status = self.zyngui.modify_chain_status
             if fmt and not self.show_all and self.list_data and self.list_data[self.index][0]:
                 eng_code = self.list_data[self.index][0]
                 chain = self.chain_manager.get_chain(status["chain_id"]) if "chain_id" in status else None
-                refs = zynthian_engine_plugin_hostd.menu_refs(
+                refs = plugin_hostd.menu_refs(
                     chain, eng_code, self.chain_manager.engine_info[eng_code], status.get("processor"))
         except Exception as e:
             logging.debug(f"No chain figures for the highlighted plugin => {e}")
