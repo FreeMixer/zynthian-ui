@@ -67,3 +67,12 @@ into the surface's LCD, rings and motor faders:
 - a fader move lands on the chain level, and the motor follows a level changed on the UI.
 
 Still to prove on a desk: captures of an X-Touch for these docs, and no xruns during surface traffic.
+
+## Screens of four
+
+A device with four encoders shows four controls at a time, so the engine cuts a layout page of more than four
+controls into screens and names each screen by what is on it ("Band 1: Freq Gain Q Type", "Band 1: On"), never by a
+numbered suffix.
+
+Next step: an omx-panel `layout --pages` option for the number of controls per page, so a four-encoder
+device asks for pages of four and the engine no longer cuts them.
