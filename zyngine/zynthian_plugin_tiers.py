@@ -16,13 +16,17 @@
 #   measured                    yes      > live ms      any        studio      studio · <figures>        no
 #   measured                    no or unknown  any      any        studio      studio · <figures>        no
 #
-# <figures> are the record's, as it holds them, at the current rate and quantum:
-#   latency  64/0 fr          measured/declared frames, 64 fr when the record declares none; latency unknown
-#   RT       RT clean         no allocation, lock, syscall or thread violation under the sweep;
-#                             runs alone: some, so plugin-hostd isolates it in its own worker, never
-#                             grouped with RT-safe plugins (it is not refused); RT unmeasured: no
+# <figures> are the record's, as it holds them, at the current rate and quantum, separated by a space
+# and short enough that a row of half the 1024 px screen shows all three after a long title:
+#   latency  64/0fr           measured/declared frames, 64fr when the record declares none; lat? unknown
+#   RT       RT-ok            no allocation, lock, syscall or thread violation under the sweep;
+#                             RT-alone: some, so plugin-hostd isolates it in its own worker, never
+#                             grouped with RT-safe plugins (it is not refused); RT-?: no
 #                             interposer count, or not swept
-#   cost     19.4 ns/smp      the median ns per sample measured at this rate and quantum; cost unknown
+#   cost     19.4ns           the median ns per sample measured at this rate and quantum; cost? unknown
+# The record read is the one of the format the row stands for: the LV2 uri's for an LV2 row, the
+# clap:<path>#<id> one for a CLAP row. A record whose verdict is hosting.rt-safety.violations-in-run
+# is RT-alone whatever its counts say.
 #
 # live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
