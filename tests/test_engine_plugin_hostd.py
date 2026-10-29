@@ -772,7 +772,8 @@ class test_pages(plugin_hostd_case):
         self.big()
         proc = self.add(self.chain(), "PH/Big")
         self.assertEqual(proc.engine._ctrl_screens, [
-            ["Main 1 1", ["p0", "p1", "p2", "p3"]], ["Main 1 2", ["p4", "p5", "p6", "p7"]], ["Main 2", ["p8", "p9"]]])
+            ["Main 1: Freq 0 Freq 1 Freq 2 Freq 3", ["p0", "p1", "p2", "p3"]],
+            ["Main 1: Freq 4 Freq 5 Freq 6 Freq 7", ["p4", "p5", "p6", "p7"]], ["Main 2", ["p8", "p9"]]])
         self.assertEqual([z.symbol for z in proc.get_ctrl_screen("Main 2")], ["p8", "p9"])
         p0 = proc.controllers_dict["p0"]
         self.assertEqual((p0.name, p0.value_min, p0.value_max, p0.group_name), ("Freq 0 Hz", 0, 100, "Main 1"))
@@ -795,13 +796,31 @@ class test_pages(plugin_hostd_case):
         proc.controllers_dict["2"].set_value(3)
         self.assertEqual(fake.params[1000]["2"], 3.0, "the value reaches the plugin")
 
+    def test_a_group_of_five_controls_names_its_screens_by_their_content(self):
+        with open(os.path.join(FIXTURES, "big.descriptor.json")) as f:
+            descriptor = json.load(f)
+        labels = {"p0": "Freq", "p1": "Gain", "p2": "Q", "p3": "Type", "p4": "On"}
+        for c in descriptor["controls"]:
+            c["group"] = ["Band 1"] if c["id"] in labels else ["Filter"]
+            c["name"] = labels.get(c["id"], c["name"])
+        path = os.path.join(self.tmp, "band.descriptor.json")
+        with open(path, "w") as f:
+            json.dump(descriptor, f)
+        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
+        self.serve(descriptors={"urn:test:big": path})
+        proc = self.add(self.chain(), "PH/Big")
+        self.assertEqual(proc.engine._ctrl_screens, [
+            ["Band 1: Freq Gain Q Type", ["p0", "p1", "p2", "p3"]], ["Band 1: On", ["p4"]],
+            ["Filter: Freq 5 Freq 6 Freq 7 Freq 8", ["p5", "p6", "p7", "p8"]], ["Filter: Freq 9", ["p9"]]])
+
     def test_without_omx_panel_the_pages_follow_the_parameter_order(self):
         self.big()
         with self.assertLogs(level=logging.WARNING) as logs:
             proc = self.add(self.chain(), "PH/Big")
             self.add(self.chain(2), "PH/Big")
             logging.warning("end")
-        self.assertEqual([s[0] for s in proc.engine._ctrl_screens], ["Page 1 1", "Page 1 2", "Page 2"])
+        self.assertEqual([s[0] for s in proc.engine._ctrl_screens], [
+            "Page 1: Freq 0 Freq 1 Freq 2 Freq 3", "Page 1: Freq 4 Freq 5 Freq 6 Freq 7", "Page 2"])
         self.assertEqual(proc.engine._ctrl_screens[2][1], ["p8", "p9"])
         self.assertEqual(len([r for r in logs.output if "omx-panel" in r]), 1)
 

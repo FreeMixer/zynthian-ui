@@ -656,6 +656,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.pending_state = None
         self.bypass_zctrl = None
         self.zctrls = {}
+        self.labels = {}
         self._ctrls = []
         self._ctrl_screens = []
         self.options['ctrl_fb'] = False
@@ -795,6 +796,22 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             return [("Params", rows)] if rows else []
         return [(f"Page {i // 8 + 1}", rows[i:i + 8]) for i in range(0, len(rows), 8)]
 
+    def generate_ctrl_screens(self, zctrl_dict):
+        """A page holds more controls than the four encoders: each of its screens is named by what is on it
+        ("Band 1: Freq Gain Q Type", "Band 1: On"), not by a numbered suffix."""
+        first = len(self._ctrl_screens)
+        super().generate_ctrl_screens(zctrl_dict)
+        added = self._ctrl_screens[first:]
+        by_group = {}
+        for screen in added:
+            by_group.setdefault(zctrl_dict[screen[1][0]].group_symbol, []).append(screen)
+        for screens in by_group.values():
+            if len(screens) > 1:
+                group = zctrl_dict[screens[0][1][0]].group_name
+                for screen in screens:
+                    labels = [self.labels.get(symbol) or zctrl_dict[symbol].name for symbol in screen[1]]
+                    screen[0] = f"{group}: {' '.join(labels)}"
+
     def build_controllers(self):
         """A zctrl per control, grouped by page: generate_ctrl_screens cuts each page in screens of four.
         Unit, scale and range come from param_info when it answers, else from the descriptor."""
@@ -826,6 +843,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                         zopts["value_default"] = meta["values"][meta["ids"].index(meta["default"])]
                 zopts["value"] = float(value) if value else zopts["value_default"]
                 zctrls[symbol] = zynthian_controller(self, symbol, zopts)
+                self.labels[symbol] = label
                 priority -= 1
         if self.type == "Audio Effect":
             self.bypass_zctrl = zctrls["bypass"] = zynthian_controller(self, "bypass", {
