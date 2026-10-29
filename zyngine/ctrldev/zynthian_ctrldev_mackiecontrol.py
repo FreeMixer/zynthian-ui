@@ -34,6 +34,7 @@ from pathlib import Path
 from zyncoder.zyncore import lib_zyncore
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine.ctrldev.zynthian_ctrldev_base import zynthian_ctrldev_zynmixer
+from zyngine.ctrldev.zynthian_ctrldev_base_surface import zynthian_ctrldev_surface_pages
 
 
 # --------------------------------------------------------------------------
@@ -125,7 +126,10 @@ class zynthian_ctrldev_mackiecontrol(zynthian_ctrldev_zynmixer):
 		self.gui_screen = 'mixer'  # Set as default, it's needed to correct an issue when starting  up
 		# TODO: add to yaml file
 		self.encoders_ccnum = [16, 17, 18, 19, 20, 21, 22, 23]
+		self.vpot_ring_ccnum = [48, 49, 50, 51, 52, 53, 54, 55]
 		self.scroll_encoder = 60
+		# Plugin assign: the encoders drive the selected processor's current control page
+		self.surface_pages = zynthian_ctrldev_surface_pages(len(self.encoders_ccnum))
 
 	@staticmethod
 	def load_yaml_config(path, file):
@@ -304,7 +308,10 @@ class zynthian_ctrldev_mackiecontrol(zynthian_ctrldev_zynmixer):
 					self.refresh()
 
 	def channel(self, direction, ccnum, ccval):
-		if ccval == 127:
+		if ccval == 127 and self.encoder_assign == 'plugin':
+			if self.surface_pages.move(-1 if direction == 'left' else 1):
+				self.refresh_plugin_page(select=False)
+		elif ccval == 127:
 			n_strips = self.device_settings['number_of_strips']
 			if direction == 'left':
 				if self.scroll_h > 0:
@@ -570,6 +577,54 @@ class zynthian_ctrldev_mackiecontrol(zynthian_ctrldev_zynmixer):
 			self.update_top_lcd_text(i, top_text)
 			self.update_bottom_lcd_text(i, bottom_text)
 
+		if self.encoder_assign == 'plugin':
+			self.refresh_plugin_page()
+		else:
+			self.vpot_rings_off()
+
+	def on_active_chain(self, active_chain_id):
+		super().on_active_chain(active_chain_id)
+		if self.encoder_assign == 'plugin' and self.idev_out is not None:
+			self.refresh_plugin_page()
+
+	# Plugin assign: names on the top LCD row, values on the bottom one, positions on the V-Pot rings
+	def refresh_plugin_page(self, select=True):
+		if self.idev_out is None:
+			return
+		if select:
+			chain = self.chain_manager.get_active_chain()
+			self.surface_pages.select(chain.current_processor if chain else None)
+		for i in range(len(self.encoders_ccnum)):
+			self.update_plugin_strip(i)
+
+	def update_plugin_strip(self, i):
+		if self.idev_out is None:
+			return
+		if i < self.device_settings['number_of_strips']:
+			self.update_top_lcd_text(i, self.surface_pages.label(i))
+			self.update_bottom_lcd_text(i, self.surface_pages.value_text(i))
+		ring = self.vpot_ring(self.surface_pages.position(i))
+		lib_zyncore.dev_send_ccontrol_change(self.idev_out, self.midi_chan, self.vpot_ring_ccnum[i], ring)
+
+	def vpot_rings_off(self):
+		if self.idev_out is None:
+			return
+		for ccnum in self.vpot_ring_ccnum:
+			lib_zyncore.dev_send_ccontrol_change(self.idev_out, self.midi_chan, ccnum, 0)
+
+	@staticmethod
+	def vpot_steps(ccval):
+		"""Steps of a V-Pot turn: bit 6 is the direction (set is counterclockwise), bits 0-5 the count"""
+		return -(ccval & 0x3F) if ccval & 0x40 else ccval & 0x3F
+
+	@staticmethod
+	def vpot_ring(position):
+		"""V-Pot ring CC value for a position 0.0-1.0, None for dark: mode 2 (wrap, lit from the left) in bits 4-5,
+		LED 1-11 in bits 0-3"""
+		if position is None:
+			return 0
+		return 0x20 | (1 + round(max(0.0, min(1.0, position)) * 10))
+
 	def midi_event(self, ev):
 		evtype = (ev[0] >> 4) & 0x0F
 
@@ -604,6 +659,12 @@ class zynthian_ctrldev_mackiecontrol(zynthian_ctrldev_zynmixer):
 						else:			# Encoder turned rigth
 							pass
 						self.state_manager.send_cuia("ZYNPOT", params=[encoder_num, ccval])
+					return True
+				# Encoders drive the current control page of the selected processor
+				if self.encoder_assign == 'plugin':
+					col = self.encoders_ccnum.index(ccnum)
+					if self.surface_pages.turn(col, self.vpot_steps(ccval)):
+						self.update_plugin_strip(col)
 					return True
 				# Encoder PAN
 				if self.encoder_assign == 'pan':
@@ -684,6 +745,7 @@ class zynthian_ctrldev_mackiecontrol(zynthian_ctrldev_zynmixer):
 		for ccnum in self.cuia_mappings.keys():
 			lib_zyncore.dev_send_note_on(self.idev_out, self.midi_chan, ccnum, 0)
 		self.delete_lcd_text()
+		self.vpot_rings_off()
 		# Left and Right LED Display
 		lib_zyncore.dev_send_ccontrol_change(self.idev_out, self.midi_chan, 75, 0)
 		lib_zyncore.dev_send_ccontrol_change(self.idev_out, self.midi_chan, 74, 0)
