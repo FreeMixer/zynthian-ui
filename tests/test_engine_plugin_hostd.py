@@ -50,6 +50,10 @@ if _lv2 is None:
     _lv2.engines_by_type = {}
     sys.modules["zyngine.zynthian_lv2"] = _lv2
 sys.modules["zyngine"].zynthian_lv2 = _lv2
+# the presets Zynthian's cache holds for an LV2 plugin, by plugin name, as jalv reads them: a bank label to its URL and
+# presets; a test sets it, and a plugin it does not name has none
+LV2_PRESETS = {}
+_lv2.get_plugin_presets_cache = lambda name: LV2_PRESETS.get(name, {})
 
 from zyngine import zynthian_engine_plugin_hostd as ph  # noqa: E402
 from zyngine import zynthian_plugin_hostd_catalogue as cat  # noqa: E402
@@ -406,15 +410,55 @@ class test_processor(plugin_hostd_case):
         self.assertIn("preset_load 1000 factory:warm", fake.lines)
         self.assertEqual(proc.controllers_dict["1"].value, 0.25, "the values are read back after the load")
 
-    def test_a_plugin_whose_worker_lists_no_presets_has_none(self):
+    def test_an_lv2_plugin_with_no_presets_says_so_and_logs_nothing(self):
         self.serve()
         proc = self.add(self.chain(), "PH/Amp")
         with self.assertLogs(level=logging.WARNING) as logs:
-            self.assertEqual(proc.engine.get_preset_list(None, proc), [])
-            self.assertEqual(proc.engine.get_preset_list(None, proc), [])
+            banks = proc.engine.get_bank_list(proc)
+            presets = proc.engine.get_preset_list(banks[0], proc)
+            logging.warning("end")
+        self.assertEqual([(p[0], p[2]) for p in presets], [("", "No presets")], "one row says so")
+        self.assertEqual(len(logs.records), 1, "nothing is logged for a plugin that has no presets")
+        self.assertFalse(proc.engine.set_preset(proc, presets[0]), "the row loads nothing")
+
+    def test_a_clap_plugin_whose_worker_lists_no_presets_says_so_and_logs_once(self):
+        self.serve()
+        proc = self.add(self.chain(), "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono")
+        with self.assertLogs(level=logging.WARNING) as logs:
+            self.assertEqual(proc.engine.get_preset_list(None, proc), [["", None, ph.zynthian_engine_plugin_hostd.NO_PRESETS, ""]])
+            self.assertEqual(proc.engine.get_preset_list(None, proc), [["", None, ph.zynthian_engine_plugin_hostd.NO_PRESETS, ""]])
             logging.warning("end")
         self.assertEqual(len(logs.records), 2, "PHD_ERR_NO_PRESET_LIST is logged once")
         self.assertIn("PHD_ERR_NO_PRESET_LIST", logs.output[0])
+
+    def test_an_lv2_plugin_shows_its_bundle_and_user_banks_and_loads_by_uri(self):
+        fake = self.serve()
+        user = "file:///zynthian/zynthian-my-data/presets/lv2/Amp.presets.lv2/"
+        LV2_PRESETS["Amp"] = {
+            "Factory": {"bank_url": None, "presets": [{"label": "Clean", "url": "urn:test:amp#clean"},
+                                                       {"label": "Loud_Lead", "url": "urn:test:amp#loud"}]},
+            "Mine": {"bank_url": user + "Mine", "presets": [{"label": "Gig", "url": user + "Gig.ttl"}]},
+            "Empty": {"bank_url": user + "Empty", "presets": []},
+        }
+        self.addCleanup(LV2_PRESETS.clear)
+        amp = fake_plugins["urn:test:amp"]
+        self.addCleanup(amp.__setitem__, "presets", amp["presets"])
+        amp["presets"] = [("urn:test:amp#loud", "Loud Lead", {"gain": 6.0}), (user + "Gig.ttl", "Gig", {"gain": -2.0})]
+        proc = self.add(self.chain(), "PH/Amp")
+        banks = proc.engine.get_bank_list(proc)
+        self.assertEqual([(b[0], b[2]) for b in banks], [("", "Factory"), (user + "Mine", "Mine")],
+                         "the bundle's bank and the user's, an empty bank left out")
+        factory = proc.engine.get_preset_list(banks[0], proc)
+        self.assertEqual([(p[0], p[2]) for p in factory], [("urn:test:amp#clean", "Clean"), ("urn:test:amp#loud", "Loud Lead")])
+        self.assertTrue(proc.engine.set_preset(proc, factory[1]))
+        self.assertIn("preset_load 1000 urn:test:amp#loud", fake.lines, "an LV2 preset loads by its URI")
+        self.assertEqual(proc.controllers_dict["gain"].value, 6.0, "the values are read back after the load")
+        mine = proc.engine.get_preset_list(banks[1], proc)
+        self.assertEqual([(p[0], p[2]) for p in mine], [(user + "Gig.ttl", "Gig")])
+        self.assertTrue(proc.engine.is_preset_user(mine[0]) and not proc.engine.is_preset_user(factory[0]))
+        self.assertTrue(proc.engine.set_preset(proc, mine[0]))
+        self.assertEqual(proc.controllers_dict["gain"].value, -2.0)
+        self.assertNotIn("preset_list 1000", fake.lines, "an LV2 plugin's presets are not asked of the worker")
 
     def test_remove_takes_the_instance_out_of_the_daemon(self):
         fake = self.serve()
