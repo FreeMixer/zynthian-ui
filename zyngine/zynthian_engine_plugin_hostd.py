@@ -18,6 +18,7 @@ import re
 import json
 import time
 import base64
+import shlex
 import shutil
 import signal
 import socket
@@ -765,10 +766,57 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                  "default": p["value"]}, "kind": "toggle" if p["is_toggled"] else "travel"})
                 for p in ports if not p.get("is_path")]
 
+    def remote_pages(self, dcontrols):
+        """The plugin's own remote-control pages (clap.remote-controls), whatever its format calls them:
+        [(page name, [(symbol, label, unit, descriptor control)])], empty when it has none or the daemon cannot say."""
+        if self.instance is None:
+            return []
+        try:
+            count = daemon.call(f"remote_pages {self.instance}")[0]
+        except FAILURES:
+            return []
+        result = []
+        for n in range(count):
+            try:
+                words = shlex.split(daemon.call(f"remote_page_get {self.instance} {n}")[1])
+            except (ValueError,) + FAILURES:
+                continue
+            # <page_id> <section> <page_name> then eight slots, "-" for an empty one
+            if len(words) < 3:
+                continue
+            rows = []
+            for symbol in words[3:]:
+                dc = dcontrols.get(symbol, {})
+                if symbol != "-" and not dc.get("readonly"):
+                    rows.append((symbol, dc.get("label") or dc.get("name") or symbol, None, dc))
+            if rows:
+                result.append((words[2] or words[1], rows))
+        return result
+
     def pages(self):
-        """[(page name, [(symbol, label, unit, descriptor control)])]: omx-panel's pages of eight,
-        else the plain parameter order cut in eights."""
+        """[(page name, [(symbol, label, unit, descriptor control)])]: the plugin's remote pages when it has them,
+        then omx-panel's pages of eight, else the plain parameter order cut in eights.
+        A control is on the first page that shows it: the layout pages keep what the remote pages left out."""
         path = self.descriptor_path()
+        path = self.descriptor_path()
+        dcontrols = {}
+        if path:
+            try:
+                with open(path) as f:
+                    for c in json.load(f).get("controls", []):
+                        dcontrols[str(c["id"])] = c
+            except (OSError, ValueError, KeyError):
+                pass
+        result, seen = [], set()
+        for name, rows in self.remote_pages(dcontrols) + self.layout_pages(path):
+            rows = [r for r in rows if r[0] not in seen]
+            seen.update(r[0] for r in rows)
+            if rows:
+                result.append((name, rows))
+        return result
+
+    def layout_pages(self, path):
+        """The pages of the plugin's descriptor: omx-panel's pages of eight, else the parameter order cut in eights."""
         dlist, dcontrols = [], {}
         if path:
             try:
