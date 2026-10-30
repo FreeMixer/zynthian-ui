@@ -586,6 +586,20 @@ def plan_refused(chain_id, members, e):
 layout_cache = {}  # (descriptor path, mtime) => (pages, layout controls by param)
 
 
+per_page_support = {}  # omx-panel binary => whether its `layout` takes --per-page (omx-panel#93)
+
+
+def panel_per_page(panel):
+    """Detect once whether the installed omx-panel can lay out pages of the Zynthian's four encoders."""
+    if panel not in per_page_support:
+        try:
+            out = subprocess.run([panel, "layout", "--help"], capture_output=True, text=True, timeout=30)
+            per_page_support[panel] = "--per-page" in (out.stdout + out.stderr)
+        except (OSError, subprocess.SubprocessError):
+            per_page_support[panel] = False
+    return per_page_support[panel]
+
+
 def panel_layout(path):
     try:
         key = (path, os.stat(path).st_mtime)
@@ -603,7 +617,8 @@ def panel_layout(path):
         return json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30).stdout)
 
     try:
-        layout, pages = run(), run("--pages")
+        layout = run()
+        pages = run("--pages", "--per-page", "4") if panel_per_page(panel) else run("--pages")
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         log_once(("omx-panel", path), "omx-panel layout of %s failed (%s): pages follow the parameter order", path, e)
         return None
@@ -795,7 +810,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
 
     def pages(self):
         """[(page name, [(symbol, label, unit, descriptor control)])]: the plugin's remote pages when it has them,
-        then omx-panel's pages of eight, else the plain parameter order cut in eights.
+        then omx-panel's pages of four (of eight when it can't), else the plain parameter order cut in eights.
         A control is on the first page that shows it: the layout pages keep what the remote pages left out."""
         path = self.descriptor_path()
         path = self.descriptor_path()
