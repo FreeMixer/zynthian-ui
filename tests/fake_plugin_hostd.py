@@ -27,6 +27,9 @@ PLUGINS = {
         "presets": [("factory:warm", "Warm Pad", {"1": 0.25}), ("factory:bright", "Bright Lead", {"1": 0.75})]},
     "clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono": {
         "params": {"1574856808": ("-", "linear", -48.0, 0.0, 0.0), "2849352001": ("-", "stepped", 0.0, 1.0, 1.0)}, "info": False, "presets": None},
+    "clap:/usr/lib/clap/test.clap#org.test.remote": {
+        "params": {str(i): ("-", "linear", 0.0, 1.0, 0.5) for i in range(1, 13)}, "info": False, "presets": None,
+        "remote": [("Global", "Macros", ["3", "1", "-", "2"]), ("Scene A", "Mixer", ["12", "1"])]},
     "urn:test:big": {"params": {f"p{i}": ("Hz", "linear", 0.0, 100.0, 10.0) for i in range(10)},
                      "info": False, "presets": None},
 }
@@ -253,6 +256,14 @@ class fake_plugin_hostd:
         if symbol not in self.params[n]:
             return "resp -103"
         return f"resp 0 {self.params[n][symbol]:.4f}"
+
+    def verb_remote_pages(self, instance):
+        return f"resp {len(self.plugin(instance).get('remote', []))}"
+
+    def verb_remote_page_get(self, instance, page):
+        section, name, slots = self.plugin(instance)["remote"][int(page)]
+        slots = list(slots) + ["-"] * (8 - len(slots))
+        return f'resp 0 {2054 + int(page)} "{section}" "{name}" {" ".join(slots)}'
 
     def verb_param_info(self, instance, symbol):
         plugin = self.plugin(instance)

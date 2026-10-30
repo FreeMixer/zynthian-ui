@@ -885,6 +885,39 @@ class test_pages(plugin_hostd_case):
         with open(runs) as f:
             self.assertEqual(len(f.readlines()), 4, "a changed descriptor is laid out again")
 
+    REMOTE = "clap:/usr/lib/clap/test.clap#org.test.remote"
+
+    def remote(self, pages=True):
+        scan = ('file /usr/lib/clap/test.clap\n  plugin org.test.remote "Remote" vendor Test version 1\n'
+                '    features instrument synthesizer stereo\n    out main 1 channels unknown "out" out_1\n')
+        cat.add_catalogue(self.info, clap=cat.parse_clap_scan(scan))
+        descriptor = {"origin": "scanned", "plugin": {"id": "org.test.remote", "format": "clap"}, "controls": [
+            {"id": i, "name": f"P{i}", "kind": "travel", "travel": {"min": 0, "max": 1, "default": 0.5}}
+            for i in range(1, 13)]}
+        path = os.path.join(self.tmp, "remote.descriptor.json")
+        with open(path, "w") as f:
+            json.dump(descriptor, f)
+        fake = self.serve(descriptors={self.REMOTE: path})
+        if not pages:
+            fake_plugins[self.REMOTE]["remote"], saved = [], fake_plugins[self.REMOTE]["remote"]
+            self.addCleanup(fake_plugins[self.REMOTE].__setitem__, "remote", saved)
+        return fake
+
+    def test_the_plugins_remote_pages_come_first_and_the_layout_after_them(self):
+        self.remote()
+        proc = self.add(self.chain(), "PH/" + self.REMOTE)
+        pages = proc.engine.pages()
+        self.assertEqual([(name, [r[0] for r in rows]) for name, rows in pages], [
+            ("Macros", ["3", "1", "2"]), ("Mixer", ["12"]),
+            ("Page 1", ["4", "5", "6", "7", "8"]), ("Page 2", ["9", "10", "11"])])
+        self.assertEqual([z.symbol for z in proc.get_ctrl_screen("Macros")], ["3", "1", "2"])
+        self.assertEqual(proc.engine._ctrl_screens[0][1], ["3", "1", "2"], "the first screen is the first remote page")
+
+    def test_a_plugin_without_remote_pages_keeps_its_layout(self):
+        self.remote(pages=False)
+        proc = self.add(self.chain(), "PH/" + self.REMOTE)
+        self.assertEqual([(n, len(r)) for n, r in proc.engine.pages()], [("Page 1", 8), ("Page 2", 4)])
+
     def test_a_clap_parameter_is_addressed_by_its_number_not_by_the_layouts_name(self):
         # omx-panel names a CLAP parameter p<number> in its layout; plugin-hostd knows it by the number alone
         os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
