@@ -1009,6 +1009,8 @@ class zynthian_gui:
                     if chain and old_processor:
                         self.state_manager.start_busy("modify_chain", "Replacing processor")
                         processor = self.chain_manager.add_processor(chain_id, engine, chain.get_slot(old_processor))
+                        if not processor and self.chain_manager.add_refusal:
+                            self.show_info(self.chain_manager.add_refusal, 4000)
                         if processor:
                             self.chain_manager.remove_processor(chain_id, old_processor)
                             chain.rebuild_graph()
@@ -1031,7 +1033,7 @@ class zynthian_gui:
                     else:
                         #self.show_screen_reset("root")
                         self.chain_control(chain_id)
-                        self.show_info("Failed to create processor", 1500)
+                        self.show_info(self.chain_manager.add_refusal or "Failed to create processor", 4000)
                     self.state_manager.end_busy("modify_chain")
             else:
                 # Creating a new chain
@@ -1068,6 +1070,14 @@ class zynthian_gui:
                         return
                     chain = self.chain_manager.get_chain(chain_id)
                     processor = self.chain_manager.add_processor(chain_id, self.modify_chain_status["engine"])
+                    if processor is None and self.chain_manager.add_refusal:
+                        # The engine refused it: the chain made for it goes too, and the refusal is shown
+                        refusal = self.chain_manager.add_refusal
+                        self.chain_manager.remove_chain(chain_id)
+                        self.state_manager.end_busy("modify_chain")
+                        self.show_screen_reset("root")
+                        self.show_info(refusal, 4000)
+                        return
                     if self.chain_manager.chains[chain_id].synth_slots or self.modify_chain_status["audio_thru"]:
                         if self.modify_chain_status["mixbus"]:
                             am_proc = self.chain_manager.add_processor(chain_id, "MR")
@@ -2798,9 +2808,9 @@ class zynthian_gui:
         if active_chain:
             self.zynswitches_midi_setup(active_chain.midi_chan)
 
-    def cb_show_message(self, message):
+    def cb_show_message(self, message, timeout=1):
         try:
-            self.get_current_screen_obj().set_title(message, None, None, 1)
+            self.get_current_screen_obj().set_title(message, None, None, timeout)
         except Exception as e:
             logging.error(f"Can't show GUI message => {e}")
 
