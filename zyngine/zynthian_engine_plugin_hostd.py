@@ -719,6 +719,33 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         except FAILURES:
             return None
 
+    # ---- The plugin's own window (CLAP gui or an LV2 UI, the user never sees which) ----
+
+    def has_window(self):
+        """True unless the descriptor says the plugin has no window of its own."""
+        path = self.descriptor_path()
+        if not path:
+            return True
+        try:
+            with open(path) as f:
+                return json.load(f).get("plugin", {}).get("gui", True) is not False
+        except (OSError, ValueError, AttributeError):
+            return True
+
+    def window_shown(self):
+        return getattr(self, "window_open", False)
+
+    def toggle_window(self):
+        """Show the plugin's window on the display, or hide it. Returns the reply text when the daemon refuses."""
+        verb = "hide_external_ui" if self.window_shown() else "show_external_ui"
+        try:
+            reply = daemon.call(f"{verb} {self.instance}")
+        except FAILURES as e:
+            logging.error(f"plugin-hostd {e}")
+            return str(e)
+        self.window_open = verb == "show_external_ui"
+        return None
+
     def get_name(self, processor=None):
         return self.plugin_name
 

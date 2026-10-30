@@ -78,6 +78,40 @@ class processor_options_grouping(unittest.TestCase):
     def test_an_engine_that_does_not_group_lists_nothing(self):
         self.assertEqual(self.entries(types.SimpleNamespace())[1], [])
 
+    def window_rows(self, engine):
+        screen = screen_module.zynthian_gui_processor_options.__new__(screen_module.zynthian_gui_processor_options)
+        screen.last_random = {}
+        screen.zyngui = mock.MagicMock()
+        screen.update_list = mock.MagicMock()
+        screen.processor = mock.MagicMock(type="Audio Effect", eng_code="PH/x", engine=engine)
+        screen.processor.is_bypassed.return_value = False
+        screen.processor.chain.get_processor_count.return_value = 1
+        screen.fill_list()
+        return screen, [row for row in screen.filled if row[2].endswith("plugin window")]
+
+    def test_a_plugin_with_a_window_lists_show_then_hide(self):
+        state = {"shown": False}
+        engine = types.SimpleNamespace(has_window=lambda: True, window_shown=lambda: state["shown"],
+                                       toggle_window=mock.MagicMock(return_value=None))
+        screen, rows = self.window_rows(engine)
+        self.assertEqual([r[2] for r in rows], ["Show plugin window"])
+        rows[0][0]()
+        engine.toggle_window.assert_called_once_with()
+        state["shown"] = True
+        self.assertEqual([r[2] for r in self.window_rows(engine)[1]], ["Hide plugin window"])
+
+    def test_a_refused_window_says_why(self):
+        engine = types.SimpleNamespace(has_window=lambda: True, window_shown=lambda: False,
+                                       toggle_window=lambda: "resp -3")
+        screen, rows = self.window_rows(engine)
+        rows[0][0]()
+        screen.zyngui.show_info.assert_called_once()
+
+    def test_no_window_no_entry(self):
+        engine = types.SimpleNamespace(has_window=lambda: False)
+        self.assertEqual(self.window_rows(engine)[1], [])
+        self.assertEqual(self.window_rows(types.SimpleNamespace())[1], [])
+
 
 if __name__ == "__main__":
     unittest.main()

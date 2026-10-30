@@ -859,6 +859,36 @@ class test_grouping_texts(unittest.TestCase):
         self.assertIsNone(grouping.declared_words("/nonexistent"))
 
 
+class test_plugin_window(plugin_hostd_case):
+
+    def test_the_window_is_shown_and_hidden_by_instance(self):
+        fake = self.serve()
+        for uri in ("PH/Amp", "PH/clap:/usr/lib/clap/test.clap#org.test.synth"):
+            engine = self.add(self.chain(), uri).engine
+            self.assertTrue(engine.has_window())
+            self.assertFalse(engine.window_shown())
+            self.assertIsNone(engine.toggle_window())
+            self.assertIn(engine.instance, fake.windows)
+            self.assertTrue(engine.window_shown())
+            self.assertIsNone(engine.toggle_window())
+            self.assertNotIn(engine.instance, fake.windows)
+            self.assertIn(f"hide_external_ui {engine.instance}", fake.lines)
+
+    def test_a_descriptor_that_says_no_window_offers_none(self):
+        path = os.path.join(self.tmp, "nogui.descriptor.json")
+        with open(path, "w") as f:
+            json.dump({"plugin": {"id": "urn:test:big", "gui": False}, "controls": []}, f)
+        self.serve(descriptors={"urn:test:big": path})
+        self.assertFalse(self.add(self.chain(), "PH/Big").engine.has_window())
+
+    def test_a_refusal_is_returned_and_the_window_stays_closed(self):
+        self.serve()
+        engine = self.add(self.chain(), "PH/Amp").engine
+        engine.instance = 4242
+        self.assertTrue(engine.toggle_window())
+        self.assertFalse(engine.window_shown())
+
+
 class test_pages(plugin_hostd_case):
 
     def big(self):
