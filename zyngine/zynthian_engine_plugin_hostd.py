@@ -969,7 +969,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                     zctrl.set_value(float(value), False)
 
     # ---- Presets ----
-    # Every plugin shows the same two banks, whatever its format (operator, plugin-hostd#269): Factory, the presets the
+    # Every plugin shows the same two banks, whatever its format (plugin-hostd#269): Factory, the presets the
     # plugin ships, and User, the user's; plain names, sorted by name, the same save, rename and delete. The format is
     # only in a preset's key: an LV2 preset's URI (its bundle's, or a user preset Zynthian saved under jalv, from
     # zynthian_lv2's cache), a key of the daemon's preset_get for a CLAP preset, or the path of a preset file the worker
