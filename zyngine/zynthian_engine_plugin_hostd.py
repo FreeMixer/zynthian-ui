@@ -85,6 +85,7 @@ class plugin_hostd_error(Exception):
     def __init__(self, code, line):
         self.code = code
         self.name = protocol.name(code)
+        self.meaning = protocol.meaning(code)
         super().__init__(f"'{line}' => {self.name} ({code})")
 
 
