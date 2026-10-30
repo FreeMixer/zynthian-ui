@@ -95,6 +95,12 @@ class zynthian_gui_processor_options(zynthian_gui_selector_info):
         if grouping:
             self.list_data.append((self.show_grouping, None, "Grouping", [grouping, "info.png"]))
 
+        engine = self.processor.engine
+        if getattr(engine, "has_window", lambda: False)():
+            title = "Hide plugin window" if engine.window_shown() else "Show plugin window"
+            self.list_data.append((self.toggle_window, None, title,
+                                   ["Show or hide the plugin's own window on the display.", "info.png"]))
+
         self.list_data.append((None, None, "> Add to chain"))
         len_check = len(self.list_data)
         pos = "series" if self.processor.type in ["MIDI Synth", "MIDI Tool"] or self.processor.eng_code in ["MI", "MX"] else "parallel"
@@ -145,6 +151,12 @@ class zynthian_gui_processor_options(zynthian_gui_selector_info):
 
     def show_grouping(self):
         self.zyngui.show_info(self.processor.engine.grouping_text())
+
+    def toggle_window(self):
+        failure = self.processor.engine.toggle_window()
+        if failure:
+            self.zyngui.show_info(f"Plugin window: {failure}")
+        self.update_list()
 
     def add_processor(self, proc_type=None):
         if proc_type is None:
