@@ -1041,6 +1041,18 @@ class test_catalogue(plugin_hostd_case):
             self.assertEqual(key, "PH/" + info["URL"])
             self.assertEqual(cat.clap_plugins[key]["path"], info["URL"].split("#")[0][5:])
 
+    def test_titles_say_the_format_and_one_clap_id_in_two_directories_is_listed_once(self):
+        surge = CLAP_SCAN_MVERB.replace("studio.kx.distrho.MVerb", "org.surge-synth-team.surge-xt")
+        scan = "file /root/.clap/SurgeXT.clap\n" + surge + "file /usr/local/lib/clap/Surge XT.clap\n" + surge
+        added = cat.add_catalogue({"JV/Surge": lv2_info("Surge", "urn:surge")}, clap=cat.parse_clap_scan(scan),
+                                  binary=FAKE)
+        self.assertEqual(sorted(added), ["PH/Surge", "PH/clap:/root/.clap/SurgeXT.clap#org.surge-synth-team.surge-xt"])
+        titles = sorted(info["TITLE"] for info in added.values())
+        self.assertEqual(len(titles), len(set(titles)))
+        self.assertTrue(added["PH/Surge"]["TITLE"].endswith("(LV2 PH)"))
+        self.assertTrue(added["PH/clap:/root/.clap/SurgeXT.clap#org.surge-synth-team.surge-xt"]["TITLE"]
+                        .endswith("(CLAP PH)"))
+
     def test_clap_scan_text_is_parsed(self):
         plugins = cat.parse_clap_scan(CLAP_SCAN)
         self.assertEqual([p["id"] for p in plugins], ["in.lsp-plug.limiter_mono", "org.test.synth", "org.test.arp"])
