@@ -150,10 +150,13 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
     for key, info in list(engines.items()):
         if key.startswith("JV/") and info.get("TYPE") in ENGINE_TYPES:
             entry = {k: v for k, v in info.items() if k != "ENGINE"}
-            entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (PH)",
+            entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (LV2 PH)",
                           "ENABLED": bool(info.get("ENABLED")) and available})
             added["PH/" + key[3:]] = entry
+    first_dir = {}  # CLAP id => the directory it was first found in, in search order
     for plugin in (scan_clap() if clap is None else clap):
+        if first_dir.setdefault(plugin["id"], os.path.dirname(plugin["path"])) != os.path.dirname(plugin["path"]):
+            continue  # the same plugin in a later directory is the same entry
         etype = next((t for f, t in CLAP_TYPES if f in plugin["features"]), None)
         if not etype:
             continue
@@ -161,7 +164,7 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
         url = f"clap:{plugin['path']}#{plugin['id']}"
         key = "PH/" + url
         clap_plugins[key] = plugin
-        added[key] = {"ID": "phc" + url, "NAME": plugin["name"], "TITLE": f"{plugin['name']} (PH)",
+        added[key] = {"ID": "phc" + url, "NAME": plugin["name"], "TITLE": f"{plugin['name']} (CLAP PH)",
                       "TYPE": etype, "CAT": next((CLAP_CATS[f] for f in plugin["features"] if f in CLAP_CATS), "Other"),
                       "ENABLED": available, "INDEX": 9999, "URL": url, "UI": "",
                       "DESCR": f"CLAP plugin by {plugin['vendor']}, run by plugin-hostd",
