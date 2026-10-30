@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 # A stand-in for `omx-panel layout --descriptor <file> [--pages]`: the sections are the descriptor's
 # groups, a read-only control is a display (a meter in a level unit), and --pages cuts each section
-# in pages of eight as omx-panel's pagesOf does. Each run is appended to $OMX_PANEL_STUB_LOG.
+# in pages of eight (or --per-page N) as omx-panel's pagesOf does. OMX_PANEL_STUB_OLD=1 is an omx-panel
+# from before --per-page: its layout --help does not mention it and it refuses the option. Each run is appended to $OMX_PANEL_STUB_LOG.
 import os
 import sys
 import json
 
 argv = sys.argv[1:]
+old = bool(os.environ.get("OMX_PANEL_STUB_OLD"))
+if "--help" in argv:
+    print("usage: omx-panel layout --descriptor FILE [--pages]" + ("" if old else " [--per-page N]"))
+    sys.exit(0)
 if os.environ.get("OMX_PANEL_STUB_LOG"):
     with open(os.environ["OMX_PANEL_STUB_LOG"], "a") as f:
         f.write(" ".join(argv) + "\n")
+per_page = 8
+if "--per-page" in argv:
+    if old:
+        sys.exit("unknown option --per-page")
+    per_page = int(argv[argv.index("--per-page") + 1])
 with open(argv[argv.index("--descriptor") + 1]) as f:
     descriptor = json.load(f)
 sections, controls = [], []
@@ -33,10 +43,10 @@ if "--pages" in argv:
     pages = []
     for i, s in enumerate(sections):
         ids = [c["param"] for c in controls if c["section"] == i]
-        count = (len(ids) + 7) // 8
+        count = (len(ids) + per_page - 1) // per_page
         for k in range(count):
-            slots = ids[k * 8:(k + 1) * 8]
-            slots += [None] * (8 - len(slots))
+            slots = ids[k * per_page:(k + 1) * per_page]
+            slots += [None] * (per_page - len(slots))
             pages.append({"section": i, "sectionName": s, "pageName": f"{s} {k + 1}" if count > 1 else s, "ids": slots})
     print(json.dumps(pages, indent=2))
 else:

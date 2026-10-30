@@ -117,6 +117,8 @@ class plugin_hostd_case(unittest.TestCase):
         self.addCleanup(lambda: (ph.daemon.stop(), ph.daemon.client.close()))
         ph._logged.clear()
         ph.layout_cache.clear()
+        ph.per_page_support.clear()
+        os.environ.pop("OMX_PANEL_STUB_OLD", None)
         ph.probe_cache.clear()
         ph.DESCRIPTOR_WAIT = 0.5
         # The menus' lists by type start empty for every test, in place: the registry is shared
@@ -894,7 +896,8 @@ class test_pages(plugin_hostd_case):
     def big(self):
         return self.serve(descriptors={"urn:test:big": os.path.join(FIXTURES, "big.descriptor.json")})
 
-    def test_more_than_eight_controls_split_in_pages_of_eight(self):
+    def test_without_per_page_support_more_than_four_controls_are_screens_named_by_content(self):
+        os.environ["OMX_PANEL_STUB_OLD"] = "1"
         os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
         runs = os.path.join(self.tmp, "omx-panel.log")
         os.environ["OMX_PANEL_STUB_LOG"] = runs
@@ -914,6 +917,17 @@ class test_pages(plugin_hostd_case):
         self.add(self.chain(3), "PH/Big")
         with open(runs) as f:
             self.assertEqual(len(f.readlines()), 4, "a changed descriptor is laid out again")
+
+    def test_with_per_page_support_omx_panel_names_the_pages_of_four(self):
+        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
+        runs = os.path.join(self.tmp, "omx-panel.log")
+        os.environ["OMX_PANEL_STUB_LOG"] = runs
+        self.big()
+        proc = self.add(self.chain(), "PH/Big")
+        self.assertEqual(proc.engine._ctrl_screens, [
+            ["Main 1", ["p0", "p1", "p2", "p3"]], ["Main 2", ["p4", "p5", "p6", "p7"]], ["Main 3", ["p8", "p9"]]])
+        with open(runs) as f:
+            self.assertEqual(f.read().splitlines()[1].split()[-3:], ["--pages", "--per-page", "4"])
 
     REMOTE = "clap:/usr/lib/clap/test.clap#org.test.remote"
 
@@ -958,7 +972,7 @@ class test_pages(plugin_hostd_case):
         proc.controllers_dict["2"].set_value(3)
         self.assertEqual(fake.params[1000]["2"], 3.0, "the value reaches the plugin")
 
-    def test_a_group_of_five_controls_names_its_screens_by_their_content(self):
+    def five_controls_band(self, old):
         with open(os.path.join(FIXTURES, "big.descriptor.json")) as f:
             descriptor = json.load(f)
         labels = {"p0": "Freq", "p1": "Gain", "p2": "Q", "p3": "Type", "p4": "On"}
@@ -968,10 +982,20 @@ class test_pages(plugin_hostd_case):
         path = os.path.join(self.tmp, "band.descriptor.json")
         with open(path, "w") as f:
             json.dump(descriptor, f)
+        if old:
+            os.environ["OMX_PANEL_STUB_OLD"] = "1"
         os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
         self.serve(descriptors={"urn:test:big": path})
         proc = self.add(self.chain(), "PH/Big")
-        self.assertEqual(proc.engine._ctrl_screens, [
+        return proc.engine._ctrl_screens
+
+    def test_a_band_of_five_controls_is_two_pages_named_by_omx_panel(self):
+        self.assertEqual(self.five_controls_band(old=False), [
+            ["Band 1 1", ["p0", "p1", "p2", "p3"]], ["Band 1 2", ["p4"]],
+            ["Filter 1", ["p5", "p6", "p7", "p8"]], ["Filter 2", ["p9"]]])
+
+    def test_without_per_page_support_a_band_of_five_names_its_screens_by_their_content(self):
+        self.assertEqual(self.five_controls_band(old=True), [
             ["Band 1: Freq Gain Q Type", ["p0", "p1", "p2", "p3"]], ["Band 1: On", ["p4"]],
             ["Filter: Freq 5 Freq 6 Freq 7 Freq 8", ["p5", "p6", "p7", "p8"]], ["Filter: Freq 9", ["p9"]]])
 

@@ -70,6 +70,9 @@ class test_mackiecontrol_plugin(plugin_hostd_case):
 
     def setUp(self):
         super().setUp()
+        # The surface has eight encoders: its pages are omx-panel's pages of eight, which an omx-panel that
+        # lays out pages of four (--per-page) would split in halves
+        os.environ["OMX_PANEL_STUB_OLD"] = "1"
         os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
         self.fake = self.serve(descriptors={"urn:test:big": os.path.join(FIXTURES, "big.descriptor.json")})
         self.chain_ = self.chain()
