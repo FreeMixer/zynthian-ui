@@ -9,6 +9,7 @@
 
 import os
 import sys
+import json
 import unittest
 from unittest import mock
 
@@ -638,6 +639,35 @@ class test_a_plugin_that_takes_notes(signal_path_case):
         self.add(chain, "PH/Amp")
         self.add(chain, CLAP)
         self.assertEqual(self.held(fake), {(1000, 1001)})
+
+
+class test_a_run_ends_where_the_width_changes(signal_path_case):
+    """A worker runs a chain only of members as wide as the head's output (omx-clap-core refuses any other): a mono
+    effect after a stereo one is a run of its own, so the daemon is never offered a chain its worker refuses."""
+
+    def descriptor(self, name, width):
+        path = os.path.join(self.tmp, name + ".json")
+        with open(path, "w") as f:
+            json.dump({"ports": [{"role": "main", "direction": "in", "channels": width},
+                                 {"role": "main", "direction": "out", "channels": width}]}, f)
+        return path
+
+    def serve_widths(self):
+        return self.serve(descriptors={"clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono": self.descriptor("stereo", 2),
+                                       "urn:test:amp": self.descriptor("mono", 1)})
+
+    def test_a_mono_effect_between_stereo_ones_groups_nothing(self):
+        fake = self.serve_widths()
+        chain = self.chain()
+        self.add(chain, CLAP), self.add(chain, "PH/Amp"), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), set())
+        self.assertEqual(ph.daemon.chain_refused, {}, "nothing was offered that the worker refuses")
+
+    def test_members_of_one_width_still_share(self):
+        fake = self.serve_widths()
+        chain = self.chain()
+        self.add(chain, CLAP), self.add(chain, CLAP), self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.assertEqual(self.held(fake), {(1000, 1001), (1002, 1003)})
 
 
 class test_a_refusal_is_asked_again(signal_path_case):
