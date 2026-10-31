@@ -9,7 +9,9 @@
 > controller pages follow the plugin's own sections. Its tests run in CI on every change.
 >
 > Tried on one Raspberry Pi 5: chains play, with levels and behaviour measured digitally at the JACK ports. The grouped figures measure plugin-hostd directly; a run through this engine on the Pi is next. On this fork the engine is the default; in the series offered upstream it stays off until a user sets it, and
-> setting `ZYNTHIAN_PLUGIN_ENGINE=jalv` goes back. What is proven and what is still open:
+> setting `ZYNTHIAN_PLUGIN_ENGINE=jalv` goes back. Whether plugins share a worker is plugin-hostd's `grouping`
+> setting in `/zynthian/config/plugin-hostd.conf`: with `grouping off` each plugin runs in a worker of its own, and
+> `grouping on` lets the daemon plan which neighbours in series share one. What is proven and what is still open:
 > [plugin-hostd's Zynthian status](https://github.com/FreeMixer/plugin-hostd/blob/main/docs/zynthian/status.md).
 > The changes are offered upstream one step at a time, starting with
 > [zynthian-sys#228](https://github.com/zynthian/zynthian-sys/pull/228); the companion fork is
