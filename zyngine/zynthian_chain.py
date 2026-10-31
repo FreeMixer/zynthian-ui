@@ -314,7 +314,7 @@ class zynthian_chain:
     def rebuild_audio_graph(self):
         """Build dictionary of lists of sources mapped by destination"""
 
-        # plugin-hostd runs this chain's plugins in one worker, in this order
+        # plugin-hostd runs each serial run of this chain's plugins in one worker, in this order
         plugin_hostd_sync_chain(self)
 
         # TODO: This is called too frequently

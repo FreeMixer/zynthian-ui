@@ -33,8 +33,8 @@ class estimate_footer(plugin_hostd_case):
         chain = self.chain()
         self.add(chain, "JV/Amp")
         refs = ph.menu_refs(chain, "PH/NoPin", self.info["JV/NoPin"] | {"URL": "urn:test:nopin"})
-        self.assertEqual(refs, ["urn:test:amp", "urn:test:nopin"])
-        e = self.estimator()
+        self.assertEqual(refs, [(("urn:test:amp", "urn:test:nopin"),)])
+        e = est.estimator(ph.estimate_steps, delay=0.0)
         e.request("k", 48000, 256, refs)
         self.assertEqual(wait_for(e), ("k", "chain: +64 fr latency, 3.8 % CPU, 12.5 MB, 1 workers"))
         self.assertIn("estimate 48000 256 urn:test:amp urn:test:nopin", fake.lines)
@@ -77,7 +77,7 @@ class estimate_footer(plugin_hostd_case):
         self.add(chain, "JV/Amp")
         self.add(chain, "JV/NoPin")
         end = time.time() + 5
-        while len(ph.daemon.chain_figures.get(chain.chain_id, ([],))[0]) < 2 and time.time() < end:
+        while ph.daemon.chain_figures.get(chain.chain_id, (None,))[0] != ph.chain_steps(chain) and time.time() < end:
             time.sleep(0.01)
             ph.figure_chain(chain, self.sm)
         self.assertEqual(ph.daemon.chain_figures[chain.chain_id][3],

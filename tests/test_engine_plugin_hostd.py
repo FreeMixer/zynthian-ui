@@ -128,6 +128,8 @@ class plugin_hostd_case(unittest.TestCase):
         self.info = {"JV/Amp": lv2_info("Amp", "urn:test:amp"), "JV/NoPin": lv2_info("NoPin", "urn:test:nopin"),
                      "JV/Big": lv2_info("Big", "urn:test:big")}
         cat.add_catalogue(self.info, clap=cat.parse_clap_scan(CLAP_SCAN))
+        # The graph as a worker leaves it after a chain: a member it runs in the head's client has no port
+        sys.modules["zynautoconnect"].get_ports.return_value = []
         self.sm = mock.MagicMock()
         self.sm.chain_manager.engine_info = self.info
         self.sm.chain_manager.chains = {}
@@ -601,7 +603,7 @@ class test_chain_jack_names(plugin_hostd_case):
         # The replies of the issue: three CLAP members added, chain 1 0 1 2, read back
         fake = self.serve()
         fake.verb_chain_get = lambda chain: "resp 0 w4 0,1,2 0,1,2"
-        fake.verb_worker_list = lambda: "resp 1 w4:111797:clap:up:chain:1:0,1,2"
+        fake.verb_worker_list = lambda: "resp 1 w4:111797:clap:up:1:qualified:chain:1:0,1,2"
         ph.daemon.call("worker_list")
         ph.daemon.engines = {i: types.SimpleNamespace(jackname=f"effect_{i}") for i in (0, 1, 2)}
         self.addCleanup(ph.daemon.engines.clear)
@@ -629,7 +631,7 @@ class test_chain_jack_names(plugin_hostd_case):
         chain = self.chain()
         a, b = self.add(chain, "PH/Amp"), self.add(chain, self.CLAP)
         self.assertEqual(fake.chains[1], (1000, 1001))
-        self.assertIn(":lv2-clap:up:chain:1:1000,1001", fake.verb_worker_list())
+        self.assertIn(":lv2-clap:up:1:qualified:chain:1:1000,1001", fake.verb_worker_list())
         self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1000"))
         self.assertNotIn("effect_1001", {name for dst, src in chain.audio_routes.items() for name in [dst] + src})
         for out in chain.get_audio_out():
@@ -705,22 +707,22 @@ class test_plan(plugin_hostd_case):
         clients = {name for dst, src in chain.audio_routes.items() for name in [dst] + src}
         self.assertEqual(clients & {f"effect_{i}" for i in (1001, 1004)}, set(), "no connect to a client that is not there")
         workers = fake.verb_worker_list()
-        self.assertIn(":clap:up:chain:1.0:1000,1001", workers)
-        self.assertIn(":clap:up:chain:1.2:1003,1004", workers)
+        self.assertIn(":clap:up:1:qualified:chain:1.0:1000,1001", workers)
+        self.assertIn(":clap:up:1:qualified:chain:1.2:1003,1004", workers)
         self.assertNotIn("chain:1.1:", workers, "a lone segment has no worker of its own to name")
 
     def test_a_segment_worker_of_the_lv2_row_keeps_a_client_per_member(self):
         fake = self.serve(planner=True, grouping=True)
         chain = self.chain()
         a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
-        self.assertIn(":lv2:up:chain:1.0:1000,1001", fake.verb_worker_list())
+        self.assertIn(":lv2:up:1:qualified:chain:1.0:1000,1001", fake.verb_worker_list())
         self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
 
     def test_the_reason_of_every_member_left_alone_is_what_plan_get_says(self):
         fake = self.serve(planner=True, grouping=True, verdicts=self.ISOLATED)
         chain, procs = self.five(fake, ("clap", "amp", "clap", "clap", "amp"))
         self.assertEqual(fake.verb_plan_get(1), "resp 0 1000;1001;1002,1003;1004 1000:no-neighbour,1001:verdict-isolated,"
-                                                "1004:verdict-isolated")
+                                                "1004:verdict-isolated -;-;-,-;-")
         self.assertEqual([p.engine.grouping_reason() for p in procs],
                          ["no-neighbour", "verdict-isolated", None, None, "verdict-isolated"])
         self.assertEqual([p.engine.grouping_text() for p in procs],
@@ -756,14 +758,14 @@ class test_plan(plugin_hostd_case):
         worker_list = fake.verb_worker_list
         # 1001 is quarantined: it has a worker of its own and the segment's worker no longer runs it
         fake.verb_worker_list = lambda: worker_list().replace("1000,1001,1002", "1000,1002") \
-            .replace("resp 1", "resp 2") + " w1:1:clap:up:own:1001"
+            .replace("resp 1", "resp 2") + " w1:1:clap:up:1:qualified:own:1001"
         chain, procs = self.five(fake, ("clap",) * 3)
         self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
 
     def test_a_member_the_daemon_lists_in_the_segment_and_in_a_worker_of_its_own_keeps_its_own_client(self):
         fake = self.serve(planner=True, grouping=True)
         worker_list = fake.verb_worker_list
-        fake.verb_worker_list = lambda: worker_list().replace("resp 1", "resp 2") + " w1:1:clap:up:own:1001"
+        fake.verb_worker_list = lambda: worker_list().replace("resp 1", "resp 2") + " w1:1:clap:up:1:qualified:own:1001"
         chain, procs = self.five(fake, ("clap",) * 3)
         self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
 

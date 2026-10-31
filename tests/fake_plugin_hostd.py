@@ -139,10 +139,10 @@ class fake_plugin_hostd:
     def verb_worker_list(self):
         held = {m for members in self.chains.values() for m in members}
         held |= {m for segments, _ in self.applied_plans().values() for s in segments if len(s) > 1 for m in s}
-        records = [f"w{i}:{os.getpid()}:{self.row([i])}:up:own:{i}" for i in sorted(self.instances) if i not in held]
-        records += [f"{self.chain_worker(c)}:{os.getpid()}:{self.row(m)}:up:chain:{c}:{','.join(map(str, m))}"
+        records = [f"w{i}:{os.getpid()}:{self.row([i])}:up:1:qualified:own:{i}" for i in sorted(self.instances) if i not in held]
+        records += [f"{self.chain_worker(c)}:{os.getpid()}:{self.row(m)}:up:1:qualified:chain:{c}:{','.join(map(str, m))}"
                     for c, m in sorted(self.chains.items()) if m]
-        records += [f"w{300 + 10 * c + k}:{os.getpid()}:{self.row(s)}:up:chain:{c}.{k}:{','.join(map(str, s))}"
+        records += [f"w{300 + 10 * c + k}:{os.getpid()}:{self.row(s)}:up:1:qualified:chain:{c}.{k}:{','.join(map(str, s))}"
                     for c, (segments, _) in sorted(self.applied_plans().items())
                     for k, s in enumerate(segments) if len(s) > 1]
         return f"resp {len(records)}" + "".join(f" {r}" for r in records)
@@ -179,7 +179,7 @@ class fake_plugin_hostd:
         if len(set(members)) != len(members):
             return "resp -519"
         if any(m in held for c, held in self.chains.items() for m in members) or \
-                any(m in s for c, (segments, _) in self.plans.items() if c != chain for s in segments for m in s):
+                any(m in s for c, (segments, _) in self.plans.items() if c != chain for s in segments for m in members):
             return "resp -520"
         segments, reasons, open_segment = [], {}, []
         for m in members:
@@ -206,7 +206,8 @@ class fake_plugin_hostd:
                 if len(s) > 1:
                     reasons.update({m: "grouping-off" for m in s})
         self.plans[chain] = (segments, reasons)
-        return "resp 0 " + ";".join(",".join(map(str, s)) for s in segments)
+        return "resp 0 " + ";".join(",".join(map(str, s)) for s in segments) + " " + \
+            ";".join(",".join("-" for _ in s) for s in segments)
 
     def verb_plan_get(self, chain):
         plan = self.plans.get(int(chain))
@@ -214,7 +215,8 @@ class fake_plugin_hostd:
             return "resp -532"
         segments, reasons = plan
         listed = ",".join(f"{m}:{r}" for m, r in sorted(reasons.items())) or "-"
-        return "resp 0 " + ";".join(",".join(map(str, s)) for s in segments) + " " + listed
+        return "resp 0 " + ";".join(",".join(map(str, s)) for s in segments) + " " + listed + " " + \
+            ";".join(",".join("-" for _ in s) for s in segments)
 
     def verb_plan_clear(self, chain):
         return "resp 0" if self.plans.pop(int(chain), None) is not None else "resp -532"

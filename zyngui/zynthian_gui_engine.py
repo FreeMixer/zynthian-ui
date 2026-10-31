@@ -92,7 +92,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.list_order = "tier"  # one of zynthian_plugin_tiers.ORDERS
         self.hosted_only = False  # list only the plugins plugin-hostd runs
         # The chain's figures with the highlighted plugin in it, asked of plugin-hostd off this thread
-        self.estimator = zynthian_plugin_hostd_estimate.estimator(plugin_hostd.estimate)
+        self.estimator = zynthian_plugin_hostd_estimate.estimator(plugin_hostd.estimate_steps)
         self.estimate_key = None
         self.estimate_text = ""
 
