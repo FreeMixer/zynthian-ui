@@ -28,6 +28,7 @@ import tempfile
 import threading
 import subprocess
 
+import zynautoconnect
 from zyngine import zynthian_plugin_hostd_protocol
 from zyngine import zynthian_plugin_hostd_grouping
 from zyngine import zynthian_plugin_hostd_estimate
@@ -43,6 +44,7 @@ DEFAULT_PORT = int(os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_PORT", "5570"))
 FIRST_INSTANCE = 1000
 LAST_INSTANCE = 9989
 TIMEOUT = 5.0
+RUN_NUMBERS = 1000  # a chain's serial runs numbered to the daemon, see run_number
 SLOW_TIMEOUT = 30.0  # add, chain, state_save and state_load spawn or move workers
 START_TIMEOUT = 10.0  # the wait for the daemon's declared line, in plugin-hostd-start.sh
 START_SCRIPT = os.path.join(os.environ.get("ZYNTHIAN_SYS_DIR", "/zynthian/zynthian-sys"), "sbin",
@@ -157,15 +159,16 @@ class plugin_hostd_daemon:
                                    os.path.join(zynthian_engine.config_dir, "plugin-hostd.conf"))
         self.pid = None  # set only when this process started the daemon
         self.engines = {}  # instance number => engine
-        self.chains = {}  # zynthian chain id => member instances declared to the daemon
-        self.chain_refused = {}  # zynthian chain id => members the daemon refused to run together
-        self.clients = {}  # zynthian chain id => {member instance: jack client of the chain's worker}
-        self.plans = {}  # zynthian chain id => member instances the daemon planned
+        self.runs = {}  # zynthian chain id => {run number: member instances}, see run_number
+        self.chains = {}  # run number => member instances declared to the daemon
+        self.chain_refused = {}  # run number => members the daemon refused to run together
+        self.clients = {}  # run number => {member instance: jack client of the run's worker}
+        self.plans = {}  # run number => member instances the daemon planned
         self.reasons = {}  # member instance => the reason word plan_get gave for it
         self.plan_verbs = None  # whether the daemon answers plan: None until it was asked
         self.grouping = None  # False once a plan came back with grouping-off; None while that is not known
         self.estimate_verb = None  # whether the daemon answers estimate: False once it refused it, for the session
-        self.chain_figures = {}  # zynthian chain id => (refs, rate, quantum, footer text) of the chain as it is
+        self.chain_figures = {}  # zynthian chain id => (steps, rate, quantum, footer text) of the chain as it is
 
     def identify(self):
         """True when a plugin-hostd answers on the port: mod-host refuses worker_list."""
@@ -217,6 +220,7 @@ class plugin_hostd_daemon:
     def restore(self):
         self.client.close()
         self.ensure()
+        self.runs = {}
         self.chains = {}
         self.clients = {}
         self.plans = {}
@@ -298,6 +302,31 @@ class plugin_hostd_daemon:
 daemon = plugin_hostd_daemon()
 
 
+def worker_record(record):
+    """One record of worker_list, <worker>:<pid>:<row>:<state>:<core>:<pool>:<place>:<instance>,... with a place of
+    own or chain:<number>: (worker, row, state, place, number, members). The fields before the place have grown with
+    the daemon's versions, so the place is read from the end."""
+    fields = record.split(":")
+    if len(fields) < 5:
+        return None
+    chained = len(fields) >= 7 and fields[-3] == "chain"
+    return (fields[0], fields[2], fields[3], "chain" if chained else fields[-2], fields[-2] if chained else None,
+            [int(i) for i in fields[-1].split(",") if i.isdigit()])
+
+
+def head_client(members):
+    """{member: jack client} when the graph agrees that a worker runs these members as the one client of the first:
+    no other member has a port left. A worker that refused to run them as one keeps a client per member, which the
+    daemon may not say, and then {}: each member keeps its own, and the chain's routes connect them in order."""
+    try:
+        if any(zynautoconnect.get_ports(f"^{daemon.engines[i].jackname}:") for i in members[1:]):
+            log_once(("clients", tuple(members)), "plugin-hostd: members %s of one worker keep their own clients", members)
+            return {}
+    except Exception as e:
+        logging.debug(f"plugin-hostd client of {members} not read from the graph => {e}")
+    return {i: daemon.engines[members[0]].jackname for i in members}
+
+
 def chain_clients(chain_id):
     """The jack client of each member the daemon's worker for this chain runs as one client, as the daemon
     says it: chain_get names the worker and the members it runs, worker_list the row of that worker.
@@ -309,33 +338,65 @@ def chain_clients(chain_id):
     except (OSError, ValueError, *FAILURES) as e:
         logging.debug(f"plugin-hostd chain {chain_id} read back => {e}")
         return {}
-    for record in records:
-        fields = record.split(":")
-        # <worker>:<pid>:<row>:<state>:chain:<chain>:<instance>,...
-        if len(fields) >= 7 and fields[0] == worker and fields[4] == "chain" and fields[5] == str(chain_id):
-            if fields[2] not in ONE_CLIENT_ROWS or fields[3] != "up":
+    for record in filter(None, map(worker_record, records)):
+        if record[0] == worker and record[3] == "chain" and record[4] == str(chain_id):
+            if record[1] not in ONE_CLIENT_ROWS or record[2] != "up":
                 return {}
             members = [int(i) for i in running.split(",") if i.isdigit()]
-            if members and members[0] in daemon.engines:
-                return {i: daemon.engines[members[0]].jackname for i in members}
+            if members and all(i in daemon.engines for i in members):
+                return head_client(members)
     return {}
 
 
-def chain_refs(chain):
-    """The plugin refs of the plugin-hostd members of a zynthian chain in signal order."""
-    return [p.engine.plugin_uri for slot in chain.synth_slots + chain.audio_slots for p in slot
-            if isinstance(p.engine, zynthian_engine_plugin_hostd)]
+def signal_steps(slots):
+    """The chain's plugin-hostd members in signal order, as the steps a signal takes. A slot is a list of members, None
+    for a processor of something else. A step is a tuple of parallel branches, a branch a tuple of members in series.
+    A slot of one member extends the run in hand, since a worker runs a chain in series in one JACK client; a slot of
+    several is parallel, so each of its members is a branch alone; any slot that holds something else ends the run,
+    since the signal has to go through that processor (the mixer strip, a jalv plugin) on its way to the next member."""
+    steps, run = [], []
+    for slot in slots:
+        if len(slot) == 1 and slot[0] is not None:
+            run.append(slot[0])
+            continue
+        if run:
+            steps.append((tuple(run),))
+            run = []
+        branches = tuple((member,) for member in slot if member is not None)
+        if branches:
+            steps.append(branches)
+    if run:
+        steps.append((tuple(run),))
+    return steps
+
+
+def audio_path_slots(chain):
+    """The slots a chain's signal goes through: the chain's graph takes its source from the last synth slot."""
+    return chain.synth_slots[-1:] + chain.audio_slots
+
+
+def chain_steps(chain):
+    """signal_steps of a zynthian chain, of the plugin refs of its plugin-hostd members."""
+    return signal_steps([[p.engine.plugin_uri if isinstance(p.engine, zynthian_engine_plugin_hostd) else None
+                          for p in slot] for slot in audio_path_slots(chain)])
 
 
 def menu_refs(chain, eng_code, info, replacing=None):
-    """The plugin refs to ask the estimate for while a row of the plugin menu is highlighted: the chain's
-    plugin-hostd members (all but the processor being replaced) and the row's plugin last; [] for a row the
-    daemon does not run, or when it has no ref."""
+    """The steps to ask the estimate for while a row of the plugin menu is highlighted: the chain's with the row's
+    plugin in the place the chain options give it, in the slot of the processor being replaced, else before the mixer
+    strip for an effect, and first for anything else; [] for a row the daemon does not run, or when it has no ref."""
     if eng_code.split("/")[0] != "PH" or not info.get("URL"):
         return []
-    members = [p.engine.plugin_uri for slot in (chain.synth_slots + chain.audio_slots if chain else ())
-               for p in slot if p is not replacing and isinstance(p.engine, zynthian_engine_plugin_hostd)]
-    return members + [info["URL"]]
+    slots = [[info["URL"] if p is replacing else p.engine.plugin_uri if isinstance(p.engine, zynthian_engine_plugin_hostd)
+              else None for p in slot] for slot in (audio_path_slots(chain) if chain else ())]
+    if replacing is None or not any(info["URL"] in slot for slot in slots):
+        at = 0
+        if info.get("TYPE") == "Audio Effect":
+            strips = [i for i, slot in enumerate(audio_path_slots(chain) if chain else ())
+                      if slot and slot[0].eng_code in ("MI", "MR")]
+            at = strips[0] if strips else len(slots)
+        slots.insert(at, [info["URL"]])
+    return signal_steps(slots)
 
 
 def estimate(rate, quantum, refs):
@@ -357,6 +418,27 @@ def estimate(rate, quantum, refs):
     return zynthian_plugin_hostd_estimate.parse(reply)
 
 
+def estimate_steps(rate, quantum, steps):
+    """The figures of a chain as signal_steps gives it, one estimate for each branch: a branch is what one worker
+    runs. Latency adds along the steps, and a step takes its longest branch; everything else adds up. A member the
+    records lack is named by its place among all of them. plugin_hostd_estimate.parse's dict."""
+    total = {"latency": 0, "cpu": 0.0, "ram": 0, "workers": 0, "unknown": 0, "members": {}}
+    place = 0
+    for step in steps:
+        longest = 0
+        for branch in step:
+            est = estimate(rate, quantum, branch)
+            longest = max(longest, est["latency"])
+            total["cpu"] += est["cpu"]
+            total["ram"] = None if total["ram"] is None or est["ram"] is None else total["ram"] + est["ram"]
+            total["workers"] += est["workers"]
+            total["unknown"] += est["unknown"]
+            total["members"].update({place + i: code for i, code in est["members"].items()})
+            place += len(branch)
+        total["latency"] += longest
+    return total
+
+
 def audio_format(state_manager):
     """(rate, quantum) of the audio device, None when it does not say integers."""
     try:
@@ -369,31 +451,33 @@ def audio_format(state_manager):
 def figure_chain(chain, state_manager):
     """Ask, off the caller's thread, for the figures of the chain as it is: they are in daemon.chain_figures
     when the answer is there. The chain view shows them."""
-    refs, fmt = chain_refs(chain), audio_format(state_manager)
-    if not refs or fmt is None or daemon.estimate_verb is False:
+    steps, fmt = chain_steps(chain), audio_format(state_manager)
+    if not steps or fmt is None or daemon.estimate_verb is False:
         daemon.chain_figures.pop(chain.chain_id, None)
         return
-    if daemon.chain_figures.get(chain.chain_id, (None,))[0:3] == (refs, *fmt):
+    if daemon.chain_figures.get(chain.chain_id, (None,))[0:3] == (steps, *fmt):
         return
 
     def ask():
         try:
-            text = zynthian_plugin_hostd_estimate.footer(estimate(fmt[0], fmt[1], refs))
+            text = zynthian_plugin_hostd_estimate.footer(estimate_steps(fmt[0], fmt[1], steps))
         except Exception as e:
             logging.debug(f"plugin-hostd estimate of chain {chain.chain_id} => {e}")
             return
-        if chain_refs(chain) == refs:  # the chain has not moved on since the question
-            daemon.chain_figures[chain.chain_id] = (refs, fmt[0], fmt[1], text)
+        if chain_steps(chain) == steps:  # the chain has not moved on since the question
+            daemon.chain_figures[chain.chain_id] = (steps, fmt[0], fmt[1], text)
     threading.Thread(target=ask, daemon=True).start()
 
 
 def sync_chain(chain):
-    """Run the plugin-hostd members of a zynthian chain in one worker, in signal order, then give each
-    processor the jack client it has now: the chain's own for the members its worker runs as one client,
-    the client of its instance for every other.
+    """Run each serial run of the plugin-hostd members of a zynthian chain in one worker, in signal order, then give
+    each processor the jack client it has now: its run's for the members a worker runs as one client, the client of
+    its instance for every other.
     Called from the chain's graph rebuild, so after insert, remove, swap and nudge."""
     declare_chain(chain)
-    clients = daemon.clients.get(chain.chain_id, {})
+    clients = {}
+    for number in daemon.runs.get(chain.chain_id, ()):
+        clients.update(daemon.clients.get(number, {}))
     engines = []
     for slot in chain.synth_slots + chain.audio_slots:
         for p in slot:
@@ -406,22 +490,45 @@ def sync_chain(chain):
         daemon.chain_figures.pop(chain.chain_id, None)
 
 
-def chain_members(chain):
-    """The plugin-hostd instances of a zynthian chain in signal order; () when fewer than two."""
-    members = tuple(p.engine.instance for slot in chain.synth_slots + chain.audio_slots for p in slot
-                    if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None)
-    return members if len(members) > 1 else ()
+def serial_runs(chain):
+    """The runs of two or more plugin-hostd instances of a zynthian chain that may share a worker, each in signal
+    order: signal_steps says which. A member of a parallel slot, or one with nothing in series beside it, is in none
+    and has a worker of its own."""
+    steps = signal_steps([[p.engine.instance if isinstance(p.engine, zynthian_engine_plugin_hostd)
+                           and p.engine.instance is not None else None for p in slot]
+                          for slot in audio_path_slots(chain)])
+    return [branch for step in steps for branch in step if len(branch) > 1]
+
+
+def run_number(chain_id, k):
+    """The number the daemon knows run k of a zynthian chain by: the chain's own for the first, and above every chain
+    id for the others (a chain id fits a byte, chain_manager's MIDI learn table packs it in one)."""
+    return chain_id if k == 0 else (chain_id + 1) * RUN_NUMBERS + k
 
 
 def declare_chain(chain):
-    """Hand the chain's members to the daemon: to its planner, which decides what runs together, or, for a
-    daemon that has no plan verb or has grouping off, as one chain, the way plugin-hostd 0.12 took them."""
-    members = chain_members(chain)
+    """Hand each serial run of the chain to the daemon. A number whose members now belong to another run is cleared
+    first: the daemon refuses a member that another chain holds."""
     chain_id = chain.chain_id
+    wanted = {run_number(chain_id, k): members for k, members in enumerate(serial_runs(chain))}
+    for number, members in daemon.runs.get(chain_id, {}).items():
+        if number not in wanted or any(set(members) & set(other) for n, other in wanted.items() if n != number):
+            declare_run(number, ())
+    for number, members in wanted.items():
+        declare_run(number, members)
+    if wanted:
+        daemon.runs[chain_id] = wanted
+    else:
+        daemon.runs.pop(chain_id, None)
+
+
+def declare_run(number, members):
+    """Hand a run's members to the daemon: to its planner, which decides what runs together, or, for a
+    daemon that has no plan verb or has grouping off, as one chain, the way plugin-hostd 0.12 took them."""
     if daemon.plan_verbs is not False and daemon.grouping is not False:
-        if plan_chain(chain_id, members):
+        if plan_chain(number, members):
             return
-    declare_whole_chain(chain_id, members)
+    declare_whole_chain(number, members)
 
 
 def declare_whole_chain(chain_id, members):
@@ -454,8 +561,8 @@ def declare_whole_chain(chain_id, members):
 # ---- The plan: the daemon says which of the members run together ----
 
 def parse_segments(text):
-    """'1,2;3;4,5' => [[1, 2], [3], [4, 5]]"""
-    return [[int(i) for i in segment.split(",")] for segment in text.split(";")]
+    """'1,2;3;4,5' => [[1, 2], [3], [4, 5]]; the cores that follow the segments in a plan's reply are not read."""
+    return [[int(i) for i in segment.split(",")] for segment in text.split()[0].split(";")]
 
 
 def parse_reasons(text):
@@ -506,19 +613,18 @@ def segment_clients(chain_id, segments):
     except (OSError, *FAILURES) as e:
         logging.debug(f"plugin-hostd chain {chain_id} read back => {e}")
         return {}
-    fields = [r.split(":") for r in records]
-    alone = {int(i) for f in fields if len(f) >= 6 and f[4] == "own" for i in f[-1].split(",") if i.isdigit()}
+    workers = list(filter(None, map(worker_record, records)))
+    alone = {i for w in workers if w[3] == "own" for i in w[5]}
     clients = {}
-    for f in fields:
-        # <worker>:<pid>:<row>:<state>:chain:<chain>.<k>:<instance>,...
-        if len(f) < 7 or f[4] != "chain" or f[2] not in ONE_CLIENT_ROWS or f[3] != "up":
+    for _, row, state, place, number, members in workers:
+        if place != "chain" or row not in ONE_CLIENT_ROWS or state != "up":
             continue
-        owner, _, k = f[5].partition(".")
+        owner, _, k = number.partition(".")
         if owner != str(chain_id) or not k.isdigit() or int(k) >= len(segments):
             continue
-        running = [int(i) for i in f[6].split(",") if i.isdigit() and int(i) not in alone]
-        if running and running[0] in daemon.engines:
-            clients.update({i: daemon.engines[running[0]].jackname for i in running})
+        running = [i for i in members if i not in alone]
+        if running and all(i in daemon.engines for i in running):
+            clients.update(head_client(running))
     return clients
 
 
@@ -548,7 +654,8 @@ def plan_chain(chain_id, members):
         return True
     daemon.plan_verbs = True
     try:
-        reasons = parse_reasons(daemon.call(f"plan_get {chain_id}")[1].partition(" ")[2])
+        # <segments> <reasons> <cores>
+        reasons = parse_reasons((daemon.call(f"plan_get {chain_id}")[1].split() + [""])[1])
     except (OSError, ValueError, *FAILURES) as e:
         logging.error(f"plugin-hostd plan_get {chain_id} => {e}")
         reasons = {}

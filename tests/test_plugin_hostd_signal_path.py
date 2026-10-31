@@ -1,0 +1,511 @@
+# -*- coding: utf-8 -*-
+#
+# What a chain of plugin-hostd plugins does to the chain's signal path. A slot of several processors is parallel, and
+# a worker runs its chain in series inside one JACK client: only a serial run of plugins with nothing between them may
+# be grouped. The chain, its processors, its routes and the chain manager are the real ones; the daemon is the fake.
+#
+# Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+import os
+import sys
+import unittest
+from unittest import mock
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+import test_engine_plugin_hostd as phtest  # noqa: E402
+from test_engine_plugin_hostd import ph, zynthian_processor  # noqa: E402
+from zyngine.zynthian_controller import zynthian_controller  # noqa: E402
+
+CLAP = "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"
+SEND = "zynmixer_chan:send_03"
+
+
+class signal_path_case(phtest.plugin_hostd_case):
+
+    def strip(self, chain, code="MI", mixer_chan=3):
+        """The mixer strip of a chain: an audio slot of its own, a client that is not the plugin's."""
+        proc = zynthian_processor(code, {"TYPE": "Audio Effect", "NAME": code, "TITLE": code, "CAT": "Mixer"}, self.next_id)
+        self.next_id += 1
+        proc.jackname = "zynmixer_bus" if code == "MR" else "zynmixer_chan"
+        proc.mixer_chan = mixer_chan
+        chain.insert_processor(proc)
+        chain.zynmixer_proc = proc
+        chain.rebuild_graph()
+        return proc
+
+    def foreign(self, chain, jackname="jalv_x"):
+        """A plugin of another engine, as jalv's is to the chain: a client of its own."""
+        proc = zynthian_processor("JV/Other", {"TYPE": "Audio Effect", "NAME": "Other", "TITLE": "Other", "CAT": "Other"},
+                                  self.next_id)
+        self.next_id += 1
+        proc.jackname = jackname
+        proc.engine = mock.MagicMock(jackname=jackname)
+        chain.insert_processor(proc)
+        chain.rebuild_graph()
+        return proc
+
+    def parallel(self, chain, proc):
+        """Nudge a processor up into the slot before it, as the chain view's move does: the slot is then parallel."""
+        chain.nudge_processor(proc, True)
+        self.assertGreater(len(chain.audio_slots[chain.get_slot(proc)]), 1, "the nudge made a parallel slot")
+
+    def held(self, fake):
+        """The groups the daemon runs: chains declared and segments of two or more of plans that apply."""
+        groups = {m for m in fake.chains.values()}
+        for segments, _ in fake.applied_plans().values():
+            groups |= {tuple(s) for s in segments if len(s) > 1}
+        return groups
+
+
+class test_parallel_slot(signal_path_case):
+
+    def test_two_plugins_of_a_parallel_slot_stay_parallel(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.parallel(chain, b)
+        self.assertEqual(self.held(fake), set(), "two branches are not one worker's series")
+        self.assertEqual((a.get_jackname(), b.get_jackname()), ("effect_1000", "effect_1001"))
+        self.assertEqual(chain.audio_routes["effect_1000"], [])
+        self.assertEqual(chain.audio_routes["effect_1001"], [], "the sibling has its own input")
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1000", "effect_1001"], "both reach the output")
+
+    def test_a_parallel_slot_between_serial_runs_splits_them(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b, c, d, e, f = (self.add(chain, CLAP) for _ in range(6))
+        self.parallel(chain, d)  # a, b, [c, d], e, f
+        self.assertEqual(self.held(fake), {(1000, 1001), (1004, 1005)})
+        self.assertEqual({p.get_jackname() for p in (a, b)}, {"effect_1000"})
+        self.assertEqual({p.get_jackname() for p in (e, f)}, {"effect_1004"})
+        self.assertEqual(chain.audio_routes["effect_1002"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1003"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1004"], ["effect_1002", "effect_1003"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1004"])
+
+    def test_the_planner_is_asked_of_each_run_and_never_of_a_parallel_slot(self):
+        fake = self.serve(planner=True, grouping=True)
+        chain = self.chain()
+        a, b, c, d, e, f = (self.add(chain, CLAP) for _ in range(6))
+        self.parallel(chain, d)
+        self.assertEqual(self.held(fake), {(1000, 1001), (1004, 1005)})
+        self.assertEqual({p.get_jackname() for p in (e, f)}, {"effect_1004"})
+        self.assertEqual((c.get_jackname(), d.get_jackname()), ("effect_1002", "effect_1003"))
+        self.assertEqual(ph.daemon.reasons, {}, "no plan was refused")
+        self.assertFalse(any(1002 in m or 1003 in m for m in ph.daemon.plans.values()), "the parallel slot is not planned")
+
+    def test_a_chain_moved_back_out_of_parallel_is_grouped_again(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b, c = (self.add(chain, CLAP) for _ in range(3))
+        self.parallel(chain, c)
+        self.assertEqual(self.held(fake), set())
+        chain.nudge_processor(c, True)  # out of the slot, before b
+        self.assertEqual(self.held(fake), {(1000, 1002, 1001)})
+        self.assertEqual(c.get_jackname(), "effect_1000")
+
+    def test_a_member_moved_between_runs_is_never_refused_as_busy(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, CLAP) for _ in range(7)]
+        self.parallel(chain, procs[3])  # 0 1 [2 3] 4 5 6: two runs
+        self.assertEqual(self.held(fake), {(1000, 1001), (1004, 1005, 1006)})
+        chain.nudge_processor(procs[3], False)  # 0 1 2 3 4 5 6, out of the slot: one run
+        chain.nudge_processor(procs[1], False)  # 0 [2 1] 3 4 5 6: 1 joins 2's slot, the run after it holds 3 to 6
+        self.assertEqual(self.held(fake), {(1003, 1004, 1005, 1006)})
+        self.assertEqual(ph.daemon.chain_refused, {}, "the daemon refused nothing")
+
+    def test_a_restored_daemon_gets_the_runs_back(self):
+        fake = self.serve()
+        chain = self.chain()
+        for _ in range(6):
+            self.add(chain, CLAP)
+        self.parallel(chain, chain.audio_slots[3][0])
+        groups = self.held(fake)
+        fake.chains.clear()
+        ph.daemon.restore()
+        self.assertEqual(self.held(fake), groups)
+
+    def test_removing_the_members_clears_every_run(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, CLAP) for _ in range(6)]
+        self.parallel(chain, procs[3])
+        self.assertEqual(len(fake.chains), 2)
+        for p in procs:
+            self.remove(chain, p)
+        self.assertEqual(fake.chains, {})
+        self.assertEqual(ph.daemon.clients, {})
+
+
+class test_a_chain_with_other_members(signal_path_case):
+
+    def test_a_strip_between_two_plugins_stays_in_the_path(self):
+        """pre-fader, strip, post-fader: one worker would take the signal past the fader."""
+        fake = self.serve()
+        chain = self.chain()
+        pre = self.add(chain, CLAP)
+        strip = self.strip(chain)
+        post = self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), set(), "the fader runs between them")
+        self.assertEqual(post.get_jackname(), "effect_1001")
+        self.assertEqual(chain.audio_routes["zynmixer_chan:input_03"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1001"], ["zynmixer_chan:output_03"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1001"], "the output is after the fader")
+
+    def test_runs_on_each_side_of_the_strip_are_grouped_apart(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.strip(chain)
+        c, d = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001), (1002, 1003)})
+        self.assertEqual(chain.audio_routes["zynmixer_chan:input_03"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1002"], ["zynmixer_chan:output_03"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1002"])
+
+    def test_a_jalv_plugin_between_two_plugins_stays_in_the_path(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, CLAP)
+        self.foreign(chain)
+        self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), set())
+        self.assertEqual(chain.audio_routes["jalv_x"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1001"], ["jalv_x"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1001"], "the jalv plugin's output is used")
+
+    def test_a_parallel_slot_of_a_plugin_and_a_jalv_plugin_keeps_both(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, CLAP)
+        self.add(chain, CLAP)
+        jalv = self.foreign(chain)
+        chain.nudge_processor(jalv, True)  # a, [b, jalv]
+        self.add(chain, CLAP)  # a, [b, jalv], c
+        self.assertEqual(self.held(fake), set())
+        self.assertEqual(chain.audio_routes["effect_1001"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["jalv_x"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1002"], ["effect_1001", "jalv_x"], "both feed the next slot")
+
+    def test_a_synth_heads_the_run_of_the_effects_after_it_and_not_of_a_parallel_slot(self):
+        fake = self.serve()
+        chain = self.chain()
+        synth = self.add(chain, "PH/clap:/usr/lib/clap/test.clap#org.test.synth")
+        self.assertIn(synth, chain.synth_slots[0])
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001, 1002)})
+        self.parallel(chain, b)
+        self.assertEqual(self.held(fake), set(), "the synth feeds two branches")
+        self.assertEqual(chain.audio_routes["effect_1001"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1002"], ["effect_1000"])
+
+
+class test_daemon_as_it_answers_today(signal_path_case):
+    """The records and replies as plugin-hostd 0.15.4 writes them, the fake's now."""
+
+    def test_a_record_with_a_core_and_a_pool_is_read_from_its_place(self):
+        self.assertEqual(ph.worker_record("w3:4513:clap:up:1:qualified:chain:1:1000,1001"),
+                         ("w3", "clap", "up", "chain", "1", [1000, 1001]))
+        self.assertEqual(ph.worker_record("w1:4309:clap:up:1:qualified:own:1000"),
+                         ("w1", "clap", "up", "own", None, [1000]))
+        self.assertEqual(ph.worker_record("w3:4513:clap:up:1:qualified:chain:2001.0:1000,1001")[4], "2001.0")
+
+    def test_the_cores_after_a_plan_are_not_read_as_segments(self):
+        self.assertEqual(ph.parse_segments("1000,1001;1002 -,-;-"), [[1000, 1001], [1002]])
+
+    def test_a_worker_that_keeps_a_client_per_member_is_routed_member_by_member(self):
+        # plugin-hostd 0.15.4 answers resp 0 when the worker refuses the chain line: the graph says what runs
+        self.serve()
+        chain = self.chain()
+        with mock.patch.object(sys.modules["zynautoconnect"], "get_ports", side_effect=lambda name: ["port"]):
+            a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual((a.get_jackname(), b.get_jackname()), ("effect_1000", "effect_1001"))
+        self.assertEqual(chain.audio_routes["effect_1001"], ["effect_1000"])
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1001"])
+
+    def test_a_graph_that_cannot_be_read_leaves_the_daemons_word(self):
+        self.serve()
+        chain = self.chain()
+        with mock.patch.object(sys.modules["zynautoconnect"], "get_ports", side_effect=AttributeError("no client")):
+            a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual((a.get_jackname(), b.get_jackname()), ("effect_1000", "effect_1000"))
+
+
+class test_mixbus(signal_path_case):
+    """A mixbus chain is what an effects send returns through: no synth, its input the mixer's send."""
+
+    def test_its_effects_are_fed_by_the_send_and_grouped_up_to_the_strip(self):
+        fake = self.serve()
+        chain = self.chain()
+        mr = self.strip(chain, "MR")
+        chain.audio_slots.remove([mr])
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        chain.audio_slots.append([mr])
+        chain.rebuild_graph()
+        self.assertTrue(chain.is_mixbus())
+        self.assertEqual(self.held(fake), {(1000, 1001)})
+        self.assertEqual(chain.audio_routes["effect_1000"], [SEND])
+        self.assertEqual(chain.audio_routes["zynmixer_bus:input_03"], ["effect_1000"])
+
+    def test_parallel_effects_of_a_mixbus_each_take_the_send(self):
+        fake = self.serve()
+        chain = self.chain()
+        mr = self.strip(chain, "MR")
+        chain.audio_slots.remove([mr])
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        chain.audio_slots.append([mr])
+        self.parallel(chain, b)
+        self.assertEqual(self.held(fake), set())
+        self.assertEqual(chain.audio_routes["effect_1000"], [SEND])
+        self.assertEqual(chain.audio_routes["effect_1001"], [SEND])
+        self.assertEqual(chain.audio_routes["zynmixer_bus:input_03"], ["effect_1000", "effect_1001"])
+
+    def test_a_mixbus_named_from_its_plugin_gives_the_send_page_a_name(self):
+        # refresh_mixbus_sends names a send's page from the chain's first audio effect when it has no title
+        self.serve()
+        chain = self.chain()
+        proc = self.add(chain, "PH/Amp")
+        self.assertEqual(chain.get_processors("Audio Effect")[0], proc)
+        self.assertEqual(proc.get_name(), "Amp")
+
+
+class test_figures_follow_the_signal(signal_path_case):
+    """The chain view's figures: a parallel slot's latency is its longest branch's, and each group is its own worker."""
+
+    def figures(self, chain):
+        return ph.estimate_steps(48000, 256, ph.chain_steps(chain))
+
+    def test_a_series_chain_is_asked_once(self):
+        fake = self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp"), self.add(chain, "PH/NoPin")
+        self.assertEqual(ph.chain_steps(chain), [(("urn:test:amp", "urn:test:nopin"),)])
+        self.assertEqual(self.figures(chain)["latency"], 64)
+        self.assertEqual(len([line for line in fake.lines if line.startswith("estimate ")]), 1)
+
+    def test_a_parallel_slot_takes_the_longest_latency_and_adds_the_rest(self):
+        fake = self.serve(estimator=True)
+        fake.ESTIMATES = {"urn:test:amp": (10, 1.0, 100), "urn:test:nopin": (40, 2.0, 200)}
+        chain = self.chain()
+        a, b, c = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp"), self.add(chain, "PH/NoPin")
+        self.parallel(chain, c)
+        self.assertEqual(ph.chain_steps(chain), [(("urn:test:amp",),), (("urn:test:amp",), ("urn:test:nopin",))])
+        est = self.figures(chain)
+        self.assertEqual(est["latency"], 10 + 40, "not the sum of the two branches")
+        self.assertAlmostEqual(est["cpu"], 1.0 + 1.0 + 2.0)
+        self.assertEqual(est["ram"], 400)
+        self.assertEqual(est["workers"], 3)
+
+    def test_the_strip_splits_the_figures_as_it_splits_the_workers(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.strip(chain)
+        self.add(chain, "PH/NoPin")
+        self.assertEqual(ph.chain_steps(chain), [(("urn:test:amp",),), (("urn:test:nopin",),)])
+        self.assertEqual(self.figures(chain)["workers"], 2)
+
+    def test_an_unknown_member_is_named_by_its_place_in_the_chain(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.foreign(chain)
+        self.add(chain, "PH/Big")
+        est = self.figures(chain)
+        self.assertEqual(est["unknown"], 1)
+        self.assertEqual(est["members"].keys(), {1}, "the second plugin of the chain's, not the first of its group")
+
+    def test_the_menu_counts_the_candidate_before_the_strip_where_it_will_go(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.strip(chain)
+        info = self.info["JV/NoPin"] | {"URL": "urn:test:nopin"}
+        self.assertEqual(ph.menu_refs(chain, "PH/NoPin", info), [(("urn:test:amp", "urn:test:nopin"),)])
+
+    def test_the_menu_puts_a_replacement_in_the_place_of_what_it_replaces(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.parallel(chain, b)
+        info = self.info["JV/NoPin"] | {"URL": "urn:test:nopin"}
+        self.assertEqual(ph.menu_refs(chain, "PH/NoPin", info, replacing=b),
+                         [(("urn:test:amp",), ("urn:test:nopin",))])
+
+
+def load_chain_manager():
+    """The real chain manager: only the other engines, and what needs a Zynthian's native libraries, are stand-ins."""
+    pkg = sys.modules["zyngine"]
+    native = sys.modules["zyncoder.zyncore"].lib_zyncore
+    for name, value in (("zmop_get_num_chains", 17), ("zmip_get_num_devs", 4), ("zmop_get_num_devs", 4)):
+        getattr(native, name).return_value = value
+    engines = ("zynaddsubfx", "fluidsynth", "sfizz", "linuxsampler", "setbfree", "aeolus", "audioplayer", "sooperlooper",
+               "sysex", "midi_control", "puredata", "modui", "inet_radio", "audio_mixer", "alsa_mixer", "tempo", "clippy",
+               "jalv", "pianoteq")
+    names = {f"zynthian_engine_{e}": mock.MagicMock() for e in engines}
+    names["zynthian_engine_plugin_hostd"] = ph.zynthian_engine_plugin_hostd
+    names["get_pianoteq_binary_info"] = lambda: None
+    names["sleep"] = lambda seconds: None
+    names["zynthian_controller"] = zynthian_controller
+    stand_ins = {f"zyngine.zynthian_engine_{e}": mock.MagicMock(__all__=[]) for e in ("jalv", "pianoteq")}
+    stand_ins.update({n: mock.MagicMock() for n in ("zyngine.zynthian_state_manager", "zyngui", "zyngui.zynthian_gui_config")})
+    with mock.patch.dict(sys.modules, stand_ins), mock.patch.multiple(pkg, create=True, __all__=list(names),
+                                                                      zynthian_state_manager=mock.MagicMock(), **names):
+        with mock.patch.object(phtest._lv2, "get_engines", lambda: {"PT": {}}, create=True):
+            from zyngine import zynthian_chain_manager
+    sys.modules.pop("zyngine.zynthian_chain_manager", None)
+    return zynthian_chain_manager
+
+
+class strip_engine:
+    """The mixer's engine, as far as the chain manager and the chain ask of it."""
+
+    def __init__(self, state_manager=None):
+        self.processors = []
+        self.nickname = "MI"
+
+    def add_processor(self, processor):
+        self.processors.append(processor)
+        processor.jackname = "zynmixer_bus" if processor.eng_code == "MR" else "zynmixer_chan"
+        processor.mixer_chan = processor.id
+        processor.zynmixer = mock.MagicMock()
+        processor.zynmixer.get_send_level.return_value = 0
+        processor.zynmixer.get_send_mode.return_value = 0
+
+    def remove_processor(self, processor):
+        self.processors.remove(processor)
+
+    def get_jackname(self):
+        return "zynmixer_chan"
+
+    def get_name(self, processor=None):
+        return "strip"
+
+    def stop(self):
+        pass
+
+    def __getattr__(self, name):
+        return mock.MagicMock()
+
+
+class test_chain_manager(signal_path_case):
+    """The real manager's graph work over the engine: a snapshot load, a mixbus, its sends and pinning."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.manager = load_chain_manager()
+
+    def setUp(self):
+        super().setUp()
+        info = {code: dict(entry, ENGINE=ph.zynthian_engine_plugin_hostd) for code, entry in self.info.items()
+                if code.startswith("PH/")}
+        strip = {"NAME": "Strip", "TITLE": "Strip", "TYPE": "Audio Effect", "CAT": "Other", "ENGINE": strip_engine, "URL": ""}
+        info.update({"MI": strip, "MR": strip})
+        patcher = mock.patch.object(self.manager.zynthian_chain_manager, "engine_info", info, create=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.cm = self.manager.zynthian_chain_manager(self.sm)
+        self.sm.chain_manager = self.cm
+        self.sm.is_busy.return_value = False
+        self.cm.add_chain(0, audio_thru=True, midi_chan=None)
+        self.cm.add_processor(0, "MR", 0, 1000000)
+
+    def snapshot(self, *slots, chain_id="1", title="c"):
+        return {chain_id: {"title": title, "midi_chan": None, "audio_thru": True, "slots": list(slots)}}
+
+    def test_a_snapshot_with_a_strip_comes_back_with_each_side_grouped_apart(self):
+        fake = self.serve()
+        state = self.snapshot({"10": CLAP}, {"11": CLAP}, {"12": "MI"}, {"13": CLAP}, {"14": CLAP})
+        self.cm.set_state(state, {})
+        chain = self.cm.chains[1]
+        self.assertEqual([[p.id for p in slot] for slot in chain.audio_slots], [[10], [11], [12], [13], [14]])
+        self.assertEqual(self.held(fake), {(1000, 1001), (1002, 1003)})
+        self.assertEqual(chain.audio_routes["zynmixer_chan:input_12"], ["effect_1000"])
+        self.assertEqual(chain.audio_routes["effect_1002"], ["zynmixer_chan:output_12"])
+
+    def test_a_second_load_stops_the_first_ones_plugins_and_groups_the_new_ones(self):
+        # upstream's f43b7da5, stop_unused_single_proc_engines: every unused PH engine is stopped before the load
+        fake = self.serve()
+        self.cm.set_state(self.snapshot({"10": CLAP}, {"11": CLAP}), {})
+        first = dict(fake.instances)
+        self.assertEqual(len(first), 2)
+        self.cm.set_state(self.snapshot({"20": CLAP}, {"21": CLAP}, {"22": CLAP}), {})
+        self.assertEqual(sorted(self.cm.zyngines), ["MR", "PH#20", "PH#21", "PH#22"])
+        self.assertEqual(len(fake.instances), 3, "the first load's plugins are gone")
+        self.assertEqual(self.held(fake), {tuple(sorted(fake.instances))})
+        self.assertEqual(ph.daemon.chain_refused, {})
+
+    def test_a_merge_keeps_the_plugins_in_use_and_stops_the_unused(self):
+        fake = self.serve()
+        self.cm.set_state(self.snapshot({"10": CLAP}, {"11": CLAP}), {})
+        kept = set(fake.instances)
+        spare = self.cm.add_processor(1, CLAP)
+        self.cm.chains[1].remove_processor(spare)
+        self.assertEqual(len(fake.instances), 3)
+        self.cm.set_state(self.snapshot({"30": CLAP}, {"31": CLAP}), {}, merge=True)
+        self.assertLessEqual(kept, set(fake.instances))
+        self.assertEqual(len(fake.instances), 4, "the spare's plugin is stopped, the merged ones are added")
+        self.assertEqual(len(self.held(fake)), 2, "each chain has its run")
+
+    def test_a_parallel_slot_in_a_snapshot_comes_back_as_the_chain_builds_it_and_the_workers_follow(self):
+        # set_state adds each saved processor as a new slot (its own comment says so), for every engine: the chain
+        # that comes back is a series, and the group is what that chain holds
+        fake = self.serve()
+        self.cm.set_state(self.snapshot({"10": CLAP, "11": CLAP}), {})
+        chain = self.cm.chains[1]
+        self.assertEqual([len(slot) for slot in chain.audio_slots], [1, 1])
+        self.assertEqual(len(self.held(fake)), 1)
+
+    def mixbus(self, *codes, title=""):
+        chain_id = self.cm.add_chain(None, audio_thru=False, title=title)
+        mr = self.cm.add_processor(chain_id, "MR", 0)
+        procs = [self.cm.add_processor(chain_id, code, 0) for code in codes]
+        return self.cm.chains[chain_id], mr, procs
+
+    def test_a_mixbus_of_plugins_takes_the_send_as_its_input(self):
+        fake = self.serve()
+        chain, mr, procs = self.mixbus(CLAP, CLAP)
+        self.assertTrue(chain.is_mixbus())
+        self.assertIn(chain.chain_id, self.cm.get_chain_ids_filtered(["mixbus"]))
+        self.assertEqual(self.held(fake), {(1001, 1000)}, "each new effect went in first")
+        head = chain.audio_slots[0][0].get_jackname()
+        self.assertEqual(chain.audio_routes[head], [f"zynmixer_chan:send_{mr.mixer_chan:02d}"])
+        self.assertEqual(chain.audio_routes[f"zynmixer_bus:input_{mr.mixer_chan:02d}"], [head])
+
+    def test_the_send_page_is_named_from_the_plugin_and_the_send_asks_the_daemon_nothing(self):
+        fake = self.serve()
+        chain, mr, procs = self.mixbus(CLAP)
+        source = self.cm.add_chain(None, audio_thru=True)
+        strip = self.cm.add_processor(source, "MI", 0)
+        sent = len(fake.lines)
+        self.cm.refresh_mixbus_sends()
+        pages = [page for page in strip.ctrl_screens_dict if page.startswith("send ")]
+        self.assertEqual(len(pages), 1)
+        self.assertIn(procs[0].get_name(), pages[0])
+        for name in (f"send_{chain.chain_id}_level", f"send_{chain.chain_id}_mode"):
+            self.assertIn(name, strip.controllers_dict)
+        self.assertEqual(fake.lines[sent:], [], "level and mode are the mixer's; the engine is not told")
+
+    def test_pinning_and_moving_a_mixbus_ask_the_daemon_nothing(self):
+        fake = self.serve()
+        chain, _, _ = self.mixbus(CLAP, CLAP)
+        before = list(self.cm.chains)
+        sent = len(fake.lines)
+        self.cm.set_pinned(2)
+        self.assertEqual(self.cm.get_pinned_pos(), len(before) - 2)
+        self.cm.move_chain(chain.chain_id, 0)
+        self.assertEqual(fake.lines[sent:], [])
+
+
+if __name__ == "__main__":
+    unittest.main()
