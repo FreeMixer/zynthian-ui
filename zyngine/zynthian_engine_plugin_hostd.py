@@ -358,18 +358,33 @@ def chain_clients(chain_id):
     return {}
 
 
-class note_head:
-    """A member that must head its run: a plugin that takes notes. A worker's one client reads MIDI for the run's head
-    only (omx-clap-core docs/chain.md, notes to a member go through its ring, not through JACK), and Zynthian routes a
-    chain's MIDI to each processor's client, so a member that takes notes behind another one would hear nothing."""
-    __slots__ = ("value",)
+class member_info:
+    """What signal_steps needs of a member beyond its value. notes: the plugin takes notes, and heads its run, since a
+    worker's one client reads MIDI for the run's head only (omx-clap-core docs/chain.md: notes to a member go through
+    its ring, not through JACK, and Zynthian routes a chain's MIDI to each processor's client). widths: its main audio
+    input and output channels, None when not known: a worker runs a chain only of members whose input and output are
+    as wide as the head's output (omx-clap-core's chain library refuses any other, OMX_CLAP_CHAIN_ERR_WIDTH), so a run
+    ends where the width changes, a mono effect after a stereo one."""
+    __slots__ = ("value", "notes", "widths")
 
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, value, notes=False, widths=None):
+        self.value, self.notes, self.widths = value, notes, widths
 
 
 def unwrap(member):
-    return member.value if isinstance(member, note_head) else member
+    return member.value if isinstance(member, member_info) else member
+
+
+def joins(run, member):
+    """Whether a member may join the run in hand: it takes no notes, and its widths match the head's output."""
+    if not isinstance(member, member_info):
+        return True
+    if member.notes:
+        return False
+    head = run[0] if run else None
+    if member.widths is None or not isinstance(head, member_info) or head.widths is None:
+        return True
+    return member.widths[0] == member.widths[1] == head.widths[1]
 
 
 def signal_steps(slots):
@@ -381,19 +396,19 @@ def signal_steps(slots):
     steps, run = [], []
     for slot in slots:
         if len(slot) == 1 and slot[0] is not None:
-            if isinstance(slot[0], note_head) and run:  # it takes notes: it heads a run of its own
-                steps.append((tuple(run),))
+            if run and not joins(run, slot[0]):  # it takes notes, or its width changes: it heads a run of its own
+                steps.append(tuple([tuple(unwrap(m) for m in run)]))
                 run = []
-            run.append(unwrap(slot[0]))
+            run.append(slot[0])
             continue
         if run:
-            steps.append((tuple(run),))
+            steps.append(tuple([tuple(unwrap(m) for m in run)]))
             run = []
         branches = tuple((unwrap(member),) for member in slot if member is not None)
         if branches:
             steps.append(branches)
     if run:
-        steps.append((tuple(run),))
+        steps.append(tuple([tuple(unwrap(m) for m in run)]))
     return steps
 
 
@@ -403,11 +418,11 @@ def audio_path_slots(chain):
 
 
 def member_of(p, value):
-    """What signal_steps is given for a processor: None for one of another engine, the value, wrapped when the
-    plugin takes notes."""
+    """What signal_steps is given for a processor: None for one of another engine, else the value with what decides
+    the runs it may join (member_info)."""
     if not isinstance(p.engine, zynthian_engine_plugin_hostd) or value is None:
         return None
-    return note_head(value) if p.engine.takes_notes() else value
+    return member_info(value, p.engine.takes_notes(), p.engine.main_widths())
 
 
 def chain_steps(chain):
@@ -951,6 +966,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.plugin_uri = self.eng_info["URL"]
         self.instance = None
         self.notes = None  # whether the plugin takes notes, see takes_notes
+        self.widths = False  # its main input and output channels, see main_widths; False until asked
         self.preset_key = None
         self.pending_state = None
         self.bypass_zctrl = None
@@ -976,6 +992,22 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         processor.jackname = self.jackname
         self.set_midi_chan(processor)
         processor.refresh_controllers()
+
+    def main_widths(self):
+        """(main input channels, main output channels) from the plugin's scanned descriptor, asked once; None when
+        the daemon has no descriptor for it, or it does not say: then nothing is split on its width."""
+        if self.widths is False:
+            self.widths = None
+            try:
+                path = daemon.call(f"descriptor_get {self.plugin_uri}")[1].strip().strip('"')
+                with open(path) as f:
+                    ports = json.load(f).get("ports", [])
+                width = {p.get("direction"): p.get("channels") for p in ports if p.get("role") == "main"}
+                if isinstance(width.get("in"), int) and isinstance(width.get("out"), int):
+                    self.widths = (width["in"], width["out"])
+            except (OSError, ValueError, AttributeError, *FAILURES):
+                pass
+        return self.widths
 
     def takes_notes(self):
         """Whether the plugin takes notes, as the daemon's note_input answers it (midi_in, or - for none), asked once.
