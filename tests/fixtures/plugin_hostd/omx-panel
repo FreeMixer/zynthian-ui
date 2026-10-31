@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # A stand-in for `omx-panel layout --descriptor <file> [--pages]`: the sections are the descriptor's
 # groups, a read-only control is a display (a meter in a level unit), and --pages cuts each section
-# in pages of eight (or --per-page N) as omx-panel's pagesOf does. OMX_PANEL_STUB_OLD=1 is an omx-panel
+# in pages of eight (or --per-page N) as omx-panel's pagesOf does, and `compare` is a stand-in for its module. OMX_PANEL_STUB_OLD=1 is an omx-panel
 # from before --per-page: its layout --help does not mention it and it refuses the option. Each run is appended to $OMX_PANEL_STUB_LOG.
 import os
 import sys
@@ -9,12 +9,35 @@ import json
 
 argv = sys.argv[1:]
 old = bool(os.environ.get("OMX_PANEL_STUB_OLD"))
+no_easy = old or bool(os.environ.get("OMX_PANEL_STUB_NO_EASY"))
 if "--help" in argv:
-    print("usage: omx-panel layout --descriptor FILE [--pages]" + ("" if old else " [--per-page N]"))
+    print("usage: omx-panel layout --descriptor FILE [--pages]" + ("" if old else " [--per-page N]") + ("" if no_easy else " [--easy-first]"))
     sys.exit(0)
 if os.environ.get("OMX_PANEL_STUB_LOG"):
     with open(os.environ["OMX_PANEL_STUB_LOG"], "a") as f:
         f.write(" ".join(argv) + "\n")
+if argv[:1] == ["compare"]:
+    # The stand-in for `omx-panel compare`: what the engine's wiring needs of tools/compare.mjs, no more
+    op, to = argv[1], argv[argv.index("--to") + 1] if "--to" in argv else None
+    data = json.load(sys.stdin)
+    values = data.get("values", {})
+    doc = data.get("doc") or {"format": "org.openmixer.compare/1", "active": "A", "slots": {}}
+    ring = data.get("ring") or {"undo": [], "redo": []}
+    ring["undo"] = ring["undo"] + data.get("captures", [])
+    target = None
+    if op == "switch":
+        target = doc["slots"].get(to)
+        doc["slots"][doc["active"]] = dict(values)
+        doc["slots"][to] = dict(target or values)
+        doc["active"] = to
+    elif op == "copy":
+        doc["slots"][to] = dict(values)
+    elif ring[op]:
+        target = ring[op].pop()
+        ring["redo" if op == "undo" else "undo"].append(dict(values))
+    moves = [{"symbol": k, "value": v} for k, v in sorted((target or {}).items()) if values.get(k) != v]
+    print(json.dumps({"doc": doc, "ring": ring, "moves": moves, "unknown": []}))
+    sys.exit(0)
 per_page = 8
 if "--per-page" in argv:
     if old:
@@ -41,8 +64,13 @@ layout = {"origin": descriptor.get("origin"), "family": "none",
           "sections": [{"key": s.lower(), "label": s} for s in sections], "controls": controls}
 if "--pages" in argv:
     pages = []
+    # --easy-first: as omx-panel's pagesOf, over the descriptor's own list alone, so the other cases keep their pages
+    easy = [c["param"] for key in (descriptor.get("easy") or []) for c in controls if c["symbol"] == key] if "--easy-first" in argv else []
+    for k in range(0, len(easy), per_page):
+        slots = easy[k:k + per_page]
+        pages.append({"section": None, "sectionName": "Easy", "pageName": "Easy" if k == 0 else f"Easy {k // per_page + 1}", "ids": slots + [None] * (per_page - len(slots))})
     for i, s in enumerate(sections):
-        ids = [c["param"] for c in controls if c["section"] == i]
+        ids = [c["param"] for c in controls if c["section"] == i and c["param"] not in easy]
         count = (len(ids) + per_page - 1) // per_page
         for k in range(count):
             slots = ids[k * per_page:(k + 1) * per_page]

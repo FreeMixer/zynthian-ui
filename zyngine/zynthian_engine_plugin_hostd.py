@@ -45,6 +45,9 @@ DEFAULT_PORT = int(os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_PORT", "5570"))
 FIRST_INSTANCE = 1000
 LAST_INSTANCE = 9989
 TIMEOUT = 5.0
+COMPARE_SLOTS = ("A", "B", "C", "D")  # omx-panel's COMPARE_SLOTS, the menu's rows
+COMPARE_PAUSE = 1.0  # seconds: controller moves closer than this are one undo step
+COMPARE_QUEUE = 64  # steps waiting for the next omx-panel run, its ring's bound
 RUN_NUMBERS = 1000  # a chain's serial runs numbered to the daemon, see run_number
 RETRY_S = 60.0  # a run the daemon refused, or planned alone for a reason that can change, is asked again after this
 RETRY_REASONS = ("no-verdict", "plan-refused:")  # plan_get reasons that the qualification sync or a pin can lift
@@ -883,18 +886,19 @@ def plan_refused(chain_id, members, e):
 layout_cache = {}  # (descriptor path, mtime) => (pages, layout controls by param)
 
 
-per_page_support = {}  # omx-panel binary => whether its `layout` takes --per-page (omx-panel#93)
+layout_help = {}  # omx-panel binary => what its `layout --help` says, to know the options it takes
 
 
-def panel_per_page(panel):
-    """Detect once whether the installed omx-panel can lay out pages of the Zynthian's four encoders."""
-    if panel not in per_page_support:
+def panel_takes(panel, option):
+    """Detect once whether the installed omx-panel's layout takes an option: --per-page (pages of the Zynthian's four
+    encoders, omx-panel#93), --easy-first (the Easy controls first)."""
+    if panel not in layout_help:
         try:
             out = subprocess.run([panel, "layout", "--help"], capture_output=True, text=True, timeout=30)
-            per_page_support[panel] = "--per-page" in (out.stdout + out.stderr)
+            layout_help[panel] = out.stdout + out.stderr
         except (OSError, subprocess.SubprocessError):
-            per_page_support[panel] = False
-    return per_page_support[panel]
+            layout_help[panel] = ""
+    return option in layout_help[panel]
 
 
 def panel_layout(path):
@@ -915,7 +919,8 @@ def panel_layout(path):
 
     try:
         layout = run()
-        pages = run("--pages", "--per-page", "4") if panel_per_page(panel) else run("--pages")
+        easy = ["--easy-first"] if panel_takes(panel, "--easy-first") else []
+        pages = run("--pages", "--per-page", "4", *easy) if panel_takes(panel, "--per-page") else run("--pages", *easy)
     except (OSError, ValueError, subprocess.SubprocessError) as e:
         log_once(("omx-panel", path), "omx-panel layout of %s failed (%s): pages follow the parameter order", path, e)
         return None
@@ -969,6 +974,12 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.widths = False  # its main input and output channels, see main_widths; False until asked
         self.preset_key = None
         self.pending_state = None
+        self.compare_doc = None  # the slots, rides the snapshot; see Compare below
+        self.compare_ring = None  # the undo steps; as the console's journal, not saved
+        self.compare_queue = []  # values to come back to, handed to omx-panel at the next step
+        self.compare_settled = {}
+        self.compare_last_move = 0.0
+        self.compare_moving = False
         self.bypass_zctrl = None
         self.zctrls = {}
         self.labels = {}
@@ -981,6 +992,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             self.instance = daemon.add(self, self.plugin_uri)
             self.jackname = f"effect_{self.instance}"
             self.zctrls = self.build_controllers()
+            self.compare_settled = self.compare_values()
             self.generate_ctrl_screens(self.zctrls)
             if self.pending_state:
                 self.load_state(self.pending_state)
@@ -1161,8 +1173,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         return result
 
     def pages(self):
-        """[(page name, [(symbol, label, unit, descriptor control)])]: the plugin's remote pages when it has them,
-        then omx-panel's pages of four (of eight when it can't), else the plain parameter order cut in eights.
+        """[(page name, [(symbol, label, unit, descriptor control)])]: omx-panel's Easy pages, the plugin's remote pages
+        when it has them, then omx-panel's pages of four (of eight when it can't), else the plain parameter order cut in eights.
         A control is on the first page that shows it: the layout pages keep what the remote pages left out."""
         path = self.descriptor_path()
         path = self.descriptor_path()
@@ -1175,7 +1187,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             except (OSError, ValueError, KeyError):
                 pass
         result, seen = [], set()
-        for name, rows in self.remote_pages(dcontrols) + self.layout_pages(path):
+        easy, layout = self.layout_pages(path)
+        for name, rows in easy + self.remote_pages(dcontrols) + layout:
             rows = [r for r in rows if r[0] not in seen]
             seen.update(r[0] for r in rows)
             if rows:
@@ -1183,7 +1196,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         return result
 
     def layout_pages(self, path):
-        """The pages of the plugin's descriptor: omx-panel's pages of eight, else the parameter order cut in eights."""
+        """The pages of the plugin's descriptor, as (the Easy pages, the others): omx-panel's, else the parameter order cut in eights."""
         dlist, dcontrols = [], {}
         if path:
             try:
@@ -1195,7 +1208,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                 logging.error(f"Can't read descriptor {path} => {e}")
         layout = panel_layout(path) if path else None
         if layout:
-            result = []
+            easy, result = [], []
             for page in layout[0]:
                 rows = []
                 for pid in filter(None, page["ids"]):
@@ -1206,12 +1219,13 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                     # port's symbol); the layout's symbol is omx-panel's own name for it (p<number> for CLAP)
                     rows.append((str(pid), lc.get("label") or dc.get("name"), lc.get("unit"), dc))
                 if rows:
-                    result.append((page.get("pageName") or page.get("sectionName"), rows))
-            return result
+                    # An Easy page belongs to no section of the plugin
+                    (easy if page.get("section") is None else result).append((page.get("pageName") or page.get("sectionName"), rows))
+            return easy, result
         rows = [(s, n, None, c) for s, n, c in self.param_list(dlist) if not c.get("hidden") and not c.get("readonly")]
         if len(rows) <= 8:
-            return [("Params", rows)] if rows else []
-        return [(f"Page {i // 8 + 1}", rows[i:i + 8]) for i in range(0, len(rows), 8)]
+            return [], [("Params", rows)] if rows else []
+        return [], [(f"Page {i // 8 + 1}", rows[i:i + 8]) for i in range(0, len(rows), 8)]
 
     def generate_ctrl_screens(self, zctrl_dict):
         """A page holds more controls than the four encoders: each of its screens is named by what is on it
@@ -1284,6 +1298,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     def send_controller_value(self, zctrl):
         if self.instance is not None:
             self.send(self.value_line(zctrl))
+            if zctrl is not self.bypass_zctrl:
+                self.compare_note_move(zctrl)
 
     def refresh_values(self):
         """Read every value back, after a preset or a state changed them in the plugin."""
@@ -1292,6 +1308,76 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                 value = self.send_quiet(f"param_get {self.instance} {symbol}")
                 if value:
                     zctrl.set_value(float(value), False)
+        self.compare_settle()
+
+    # ---- Compare ----
+    # Compare A/B/C/D and undo are omx-panel's (its docs/compare.md), one module for every host: here its command is run, its
+    # moves are sent as any controller's value and its document rides the snapshot.
+
+    def compare_values(self):
+        return {s: float(z.value) for s, z in self.zctrls.items() if z is not self.bypass_zctrl and not isinstance(z.value, str)}
+
+    def compare_settle(self):
+        """The values changed by something other than a controller: a step to come back to."""
+        values = self.compare_values()
+        if self.compare_settled and values != self.compare_settled:
+            self.compare_queue = (self.compare_queue + [self.compare_settled])[-COMPARE_QUEUE:]
+        self.compare_settled = values
+
+    def compare_note_move(self, zctrl):
+        """A controller moved. After a pause the values before it are a step to come back to; no process starts here."""
+        if self.compare_moving:
+            return
+        now = time.monotonic()
+        if now - self.compare_last_move > COMPARE_PAUSE and self.compare_settled:
+            self.compare_queue = (self.compare_queue + [dict(self.compare_settled)])[-COMPARE_QUEUE:]
+        self.compare_last_move = now
+        self.compare_settled[zctrl.symbol] = float(zctrl.value)
+
+    def compare_step(self, step):
+        """step: (op, slot) of `omx-panel compare`. None when it landed, else what went wrong, to tell the user."""
+        op, slot = step
+        panel = shutil.which("omx-panel")
+        if not panel:
+            return "omx-panel is not installed"
+        values = self.compare_values()
+        request = {"doc": self.compare_doc, "ring": self.compare_ring, "captures": self.compare_queue, "values": values}
+        try:
+            out = subprocess.run([panel, "compare", op, *(["--to", slot] if slot else [])], input=json.dumps(request),
+                                 capture_output=True, text=True, check=True, timeout=SLOW_TIMEOUT)
+            answer = json.loads(out.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            log_once(("compare", str(e)), "omx-panel compare %s failed (%s)", op, e)
+            return getattr(e, "stderr", None) or str(e)
+        self.compare_queue = [values] if op == "switch" else []
+        self.compare_ring = answer["ring"]
+        if op in ("switch", "copy"):
+            self.compare_doc = answer["doc"]
+        self.compare_moving = True
+        try:
+            for move in answer["moves"]:
+                zctrl = self.zctrls.get(move["symbol"])
+                if zctrl is not None:
+                    zctrl.set_value(move["value"], True)
+        finally:
+            self.compare_moving = False
+        self.compare_settled = self.compare_values()
+        return None
+
+    def compare_options(self):
+        """The rows of the processor's options: [(the step, title, help)]. None without an omx-panel that has it, the release
+        of --easy-first, or a control to compare."""
+        panel = shutil.which("omx-panel")
+        if not panel or not panel_takes(panel, "--easy-first") or not self.compare_values():
+            return []
+        active = self.compare_doc["active"] if self.compare_doc else COMPARE_SLOTS[0]
+        rows = [(("switch", s), f"{chr(0x2612) if s == active else chr(0x2610)} Compare {s}",
+                 "Compare settings of this processor. Presets are not touched.") for s in COMPARE_SLOTS]
+        to = COMPARE_SLOTS[(COMPARE_SLOTS.index(active) + 1) % len(COMPARE_SLOTS)]
+        rows.append((("copy", to), f"Copy {active} to {to}", f"Put the running values in slot {to}."))
+        rows.append((("undo", None), "Undo", "Step back this processor's last change."))
+        rows.append((("redo", None), "Redo", "Step forward again."))
+        return rows
 
     # ---- Presets ----
     # Every plugin shows the same two banks, whatever its format (plugin-hostd#269): Factory, the presets the
@@ -1428,6 +1514,13 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     # ---- Snapshots: the plugin's own state through state_save and state_load ----
 
     def get_extended_config(self):
+        """What a snapshot keeps past the controllers: the plugin's state, and the Compare slots."""
+        config = self.state_config()
+        if self.compare_doc:
+            return {**(config or {"plugin": self.plugin_uri}), "compare": self.compare_doc}
+        return config
+
+    def state_config(self):
         """The files state_save writes for this instance, as a base64 tar."""
         if self.instance is None:
             return None
@@ -1448,6 +1541,9 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     def set_extended_config(self, xconfig):
         """Called before the processor is added: the state waits for the instance."""
         if not xconfig or xconfig.get("plugin") != self.plugin_uri:
+            return
+        self.compare_doc = xconfig.get("compare")
+        if "state" not in xconfig:
             return
         if self.instance is None:
             self.pending_state = xconfig
