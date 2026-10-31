@@ -333,6 +333,15 @@ class fake_plugin_hostd:
                 return "resp 0"
         return "resp -523"
 
+    NOTES = ("clap:/usr/lib/clap/test.clap#org.test.synth",)  # the plugins that take notes
+
+    def verb_note_input(self, instance):
+        """plugin-hostd 0.15 with omx-clap-host: midi_in for a plugin that takes notes, - for one that does not."""
+        n = int(instance)
+        if n not in self.instances:
+            return "resp -3"
+        return "resp 0 midi_in" if self.instances[n] in self.NOTES else "resp 0 -"
+
     def verb_chain(self, chain, *members):
         chain = int(chain)
         members = tuple(int(m) for m in members)

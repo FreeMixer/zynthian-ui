@@ -420,6 +420,48 @@ class test_chain_manager(signal_path_case):
         self.cm.add_chain(0, audio_thru=True, midi_chan=None)
         self.cm.add_processor(0, "MR", 0, 1000000)
 
+    def busy_like_a_state_manager(self):
+        """start_busy and end_busy as the state manager has them: the last end sends SS_BUSY with state False."""
+        clients = set()
+        self.sm.is_busy.side_effect = lambda client=None: bool(clients)
+
+        def start(clid, *a, **kw):
+            clients.add(clid)
+
+        def end(clid, *a, **kw):
+            clients.discard(clid)
+            if not clients:
+                ph.zynsigman.send(ph.zynsigman.S_STATE_MAN, ph.zynsigman.SS_BUSY, state=False)
+        self.sm.start_busy.side_effect = start
+        self.sm.end_busy.side_effect = end
+
+    def test_a_removed_member_leaves_the_daemon_before_its_run_is_declared_again(self):
+        fake = self.serve()
+        self.busy_like_a_state_manager()
+        chain_id = self.cm.add_chain(None, audio_thru=True)
+        procs = [self.cm.add_processor(chain_id, CLAP) for _ in range(3)]
+        self.assertEqual(self.held(fake), {(1000, 1001, 1002)})
+        sent = len(fake.lines)
+        middle = procs[1].engine.instance
+        self.cm.remove_processor(chain_id, procs[1])
+        after = fake.lines[sent:]
+        removed = after.index(f"remove {middle}")
+        declared = [i for i, line in enumerate(after) if line.startswith(("chain ", "plan "))]
+        self.assertTrue(declared and all(i > removed for i in declared), f"the run is declared after the remove: {after}")
+        self.assertEqual(self.held(fake), {(1000, 1002)})
+
+    def test_a_snapshot_declares_each_run_once(self):
+        fake = self.serve()
+        self.busy_like_a_state_manager()
+        self.sm.start_busy("load_snapshot")  # the load is one busy section, as zynthian_state_manager's is
+        self.cm.set_state(self.snapshot(*({str(10 + i): CLAP} for i in range(6))), {})
+        self.sm.end_busy("load_snapshot")
+        chains = [line for line in fake.lines if line.startswith("chain ")]
+        self.assertEqual(len(chains), 1, f"one chain line for one run: {chains}")
+        self.assertEqual(self.held(fake), {tuple(range(1000, 1006))})
+        routes = self.cm.chains[1].audio_routes
+        self.assertIn("effect_1000", {s for sources in routes.values() for s in sources}, "the routes follow the group")
+
     def snapshot(self, *slots, chain_id="1", title="c"):
         return {chain_id: {"title": title, "midi_chan": None, "audio_thru": True, "slots": list(slots)}}
 
@@ -505,6 +547,144 @@ class test_chain_manager(signal_path_case):
         self.assertEqual(self.cm.get_pinned_pos(), len(before) - 2)
         self.cm.move_chain(chain.chain_id, 0)
         self.assertEqual(fake.lines[sent:], [])
+
+
+SYNTH = "PH/clap:/usr/lib/clap/test.clap#org.test.synth"
+NOPIN = "PH/NoPin"
+
+
+class test_grouping_follows_the_setting(signal_path_case):
+    """grouping off in plugin-hostd.conf (its default) groups nothing, and going back to it ungroups."""
+
+    def test_grouping_off_groups_nothing(self):
+        fake = self.serve(planner=True, grouping=False)
+        chain = self.chain()
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), set())
+        self.assertFalse([line for line in fake.lines if line.startswith("chain ")], "no chain line goes around the setting")
+        self.assertEqual((a.get_jackname(), b.get_jackname()), ("effect_1000", "effect_1001"))
+
+    def test_going_back_to_grouping_off_ungroups(self):
+        fake = self.serve(planner=True, grouping=True)
+        chain = self.chain()
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001)})
+        fake.grouping = False  # the setting changed and the daemon restarted with it
+        ph.daemon.restore()
+        chain.rebuild_graph()
+        self.assertEqual(self.held(fake), set())
+        self.assertFalse([line for line in fake.lines if line.startswith("chain ")])
+        self.assertEqual(b.get_jackname(), "effect_1001")
+
+    def test_a_daemon_without_a_planner_is_still_given_its_chain(self):
+        fake = self.serve(planner=False)
+        chain = self.chain()
+        self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001)})
+
+
+class test_an_edit_leaves_other_runs_alone(signal_path_case):
+
+    def runs_of(self, fake, planner):
+        if planner:
+            return {tuple(s): c for c, (segments, _) in fake.applied_plans().items() for s in segments if len(s) > 1}
+        return {m: c for c, m in fake.chains.items()}
+
+    def check(self, planner):
+        fake = self.serve(planner=planner, grouping=True)
+        chain = self.chain()
+        a, b = self.add(chain, CLAP), self.add(chain, CLAP)
+        self.strip(chain)
+        self.add(chain, CLAP), self.add(chain, CLAP)
+        number = self.runs_of(fake, planner)[(1002, 1003)]
+        sent = len(fake.lines)
+        self.remove(chain, a)
+        self.remove(chain, b)
+        self.assertEqual(self.runs_of(fake, planner), {(1002, 1003): number}, "the run after the strip kept its number")
+        touched = [line for line in fake.lines[sent:] if line.split()[0] in ("chain", "chain_clear", "plan", "plan_clear")
+                   and line.split()[1] == str(number)]
+        self.assertEqual(touched, [], "nothing was said of the untouched run")
+
+    def test_with_chain(self):
+        self.check(planner=False)
+
+    def test_with_the_planner(self):
+        self.check(planner=True)
+
+
+class test_a_plugin_that_takes_notes(signal_path_case):
+    """An audio effect that takes notes (a vocoder, a harmoniser): the worker's one client reads MIDI for its head
+    only, so the effect heads a run of its own and keeps the client its MIDI is routed to."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(phtest.fake_plugin_hostd, "NOTES", ("urn:test:amp",))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_behind_another_effect_it_heads_its_own_run(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, CLAP)
+        notes = self.add(chain, "PH/Amp")
+        self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1001, 1002)}, "it heads the run after it, never joins the one before")
+        self.assertEqual(notes.get_jackname(), notes.engine.jackname)
+        self.assertIn(notes.engine.jackname, chain.midi_routes, "its MIDI goes to the client it has")
+
+    def test_first_it_heads_the_run(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001)})
+
+
+class test_a_refusal_is_asked_again(signal_path_case):
+
+    def test_a_refused_chain_is_declared_once_it_can_be(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, NOPIN), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), set())
+        self.assertEqual(ph.daemon.chain_refused, {1: (1000, 1001)})
+        fake.instances[1000] = "urn:test:amp"  # the qualification sync gave it a pin
+        chain.rebuild_graph()
+        self.assertEqual(self.held(fake), set(), "not before the retry is due")
+        with mock.patch.object(ph, "RETRY_S", 0.0):
+            chain.rebuild_graph()
+        self.assertEqual(self.held(fake), {(1000, 1001)})
+
+    def test_a_plan_with_no_verdict_is_planned_again(self):
+        fake = self.serve(planner=True, grouping=True, verdicts={"urn:test:amp": "none"})
+        chain = self.chain()
+        self.add(chain, "PH/Amp"), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), set())
+        fake.verdicts.clear()  # qualified meanwhile
+        with mock.patch.object(ph, "RETRY_S", 0.0):
+            chain.rebuild_graph()
+        self.assertEqual(self.held(fake), {(1000, 1001)})
+
+    def test_a_cleared_number_forgets_its_refusal(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, NOPIN), self.add(chain, CLAP)
+        self.remove(chain, a)
+        self.remove(chain, b)
+        self.assertEqual(ph.daemon.chain_refused, {})
+
+
+class test_the_routes_follow_what_the_daemon_moves(signal_path_case):
+
+    def test_a_quarantined_member_is_routed_through_its_own_client(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b, c = (self.add(chain, CLAP) for _ in range(3))
+        self.assertEqual(c.get_jackname(), "effect_1000")
+        fake.chains[1] = (1000, 1001)  # the daemon quarantined 1002 to a worker of its own
+        ph.follow_daemon()
+        self.assertEqual(c.get_jackname(), "effect_1002")
+        self.assertEqual(b.get_jackname(), "effect_1000")
 
 
 if __name__ == "__main__":

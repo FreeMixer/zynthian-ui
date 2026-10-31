@@ -792,21 +792,22 @@ class test_plan(plugin_hostd_case):
         self.assertNotIn(1, fake.chains)
         self.assertIn(1, ph.daemon.chain_refused)
 
-    def test_with_grouping_off_the_chain_is_declared_whole_as_before(self):
+    def test_with_grouping_off_nothing_runs_together(self):
+        # the setting is the daemon's answer, and going around it with chain would group what it says not to
         fake = self.serve(planner=True, grouping=False, verdicts=self.ISOLATED)
         chain, procs = self.five(fake, ("clap",) * 3)
-        self.assertEqual(fake.chains[1], (1000, 1001, 1002))
+        self.assertNotIn(1, fake.chains)
+        self.assertFalse([l for l in fake.lines if l.startswith("chain ")], "no chain line goes around the setting")
         self.assertEqual(fake.lines.count("plan 1 1000 1001"), 1)
         self.assertEqual(fake.lines.count("plan_clear 1"), 1, "the answered plan is not left kept")
         self.assertEqual(fake.lines.count("plan_get 1"), 1)
-        self.assertEqual([p.jackname for p in procs], ["effect_1000"] * 3)
-        self.assertEqual(ph.daemon.reasons, {}, "nothing is said of plugins that run together")
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1002"])
+        self.assertEqual(ph.daemon.reasons, {}, "nothing is said of plugins that run alone by the setting")
         self.assertIs(ph.daemon.grouping, False)
         sent = len(fake.lines)
         self.add(chain, "PH/Amp")
-        self.assertEqual([l for l in fake.lines[sent:] if l.startswith("plan")], [],
-                         "once grouping is known to be off the plan is not asked again")
-        self.assertEqual(fake.chains[1], (1000, 1001, 1002, 1003))
+        self.assertEqual([l for l in fake.lines[sent:] if l.startswith(("plan", "chain "))], [],
+                         "once grouping is known to be off nothing is asked again")
 
     def test_a_refused_plan_leaves_every_member_alone_with_the_refusal_as_the_reason(self):
         fake = self.serve(planner=True, grouping=True)
