@@ -103,7 +103,8 @@ def scenario(name, uri, conf, daemon_bin):
             print(f"{'ok  ' if ok else 'FAIL'} {name}: {got:+.2f} dB, right answer {want:+.2f}; clients {clients}; workers {workers}",
                   flush=True)
             # the daemon first: it would respawn a worker that goes before it
-            workers = subprocess.run(["pgrep", "-P", str(self.daemon.pid)], capture_output=True, text=True).stdout.split()
+            with open(f"/proc/{self.daemon.pid}/task/{self.daemon.pid}/children") as f:
+                workers = f.read().split()
             self.daemon.kill()
             self.daemon.wait()
             for pid in workers:
