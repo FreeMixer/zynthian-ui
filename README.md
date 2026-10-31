@@ -3,7 +3,7 @@
 > **This is the FreeMixer fork** of [zynthian/zynthian-ui](https://github.com/zynthian/zynthian-ui), branch `vangelis`.
 > It adds an engine, `PH`, that runs a chain's LV2 and CLAP plugins through
 > [plugin-hostd](https://github.com/FreeMixer/plugin-hostd): the plugins of a chain that run in series in one worker process, a plugin qualified as not
-> real-time safe in a worker of its own, and a lost worker restarted and re-wired (a plugin that refuses a state load while it processes loses its values, [omx-clap-core#438](https://github.com/FreeMixer/omx-clap-core/issues/438)). JACK stays as it is, and jalv stays
+> real-time safe in a worker of its own, and a lost worker restarted; what a crash does through this engine is still to be measured. JACK stays as it is, and jalv stays
 > for what plugin-hostd refuses. Plugin menus are ordered from the measurements of
 > [plugin-qualify](https://github.com/FreeMixer/plugin-qualify), every plugin has a Factory and a User preset bank, and
 > controller pages follow the plugin's own sections. Its tests run in CI on every change.
