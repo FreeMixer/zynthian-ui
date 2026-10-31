@@ -31,13 +31,19 @@ FADER = 0.1  # -20 dB
 OTHER = 0.5  # -6 dB
 TONE = 0.1
 SCENARIOS = ("series", "parallel", "serial_then_parallel", "strip", "other", "mixbus_series", "mixbus_parallel",
-             "grouping_off", "edit_elsewhere", "notes_behind_effect", "zynthian_unqualified", "zynthian_qualified")
+             "grouping_off", "edit_elsewhere", "notes_behind_effect", "zynthian_unqualified", "zynthian_qualified",
+             "zynthian_packaged")
 NOTE_URI = "clap:/usr/libexec/omx-plugins/test/omx-test-sine-voice.clap#org.openmixer.test-sine-voice"
 # The daemon's settings per scenario, besides state_root: a Zynthian's own (require_pins, first-use pins) for the two
 # zynthian_ ones, grouping off for grouping_off, and grouping on for every other, since they measure grouped paths
 CONF = {"grouping_off": ["require_pins 0", "grouping off"],
         "zynthian_unqualified": ["require_pins 1", "pin_mode first-use", "grouping on"],
-        "zynthian_qualified": ["require_pins 1", "pin_mode first-use", "grouping on"]}
+        "zynthian_qualified": ["require_pins 1", "pin_mode first-use", "grouping on"],
+        "zynthian_packaged": ["require_pins 1", "pin_mode first-use", "grouping on"]}
+# The two zynthian_ rows that set the verdict themselves read no package pins (pins_dir an empty directory): a host
+# whose packages pin the plugin, a Zynthian with omx-plugins, would otherwise answer them before the first add.
+# zynthian_packaged reads the installed ones, as a Zynthian does.
+NO_PACKAGE_PINS = ("zynthian_unqualified", "zynthian_qualified")
 
 
 def db(x):
@@ -84,6 +90,9 @@ def scenario(name, uri, conf, daemon_bin):
             path = os.path.join(tmp, "plugin-hostd.conf")
             with open(path, "w") as f:
                 settings = CONF.get(name, ["require_pins 0", "grouping on"]) + [f"pin_store {tmp}/pins"]
+                if name in NO_PACKAGE_PINS:
+                    os.makedirs(os.path.join(tmp, "no-package-pins"))
+                    settings.append(f"pins_dir {tmp}/no-package-pins")
                 f.write(f"state_root {tmp}\n" + "".join(f"{line}\n" for line in settings + list(conf)))
             self.daemon = subprocess.Popen([daemon_bin, "-n", "-p", str(self.port), "-c", path], env=env,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -211,6 +220,17 @@ def scenario(name, uri, conf, daemon_bin):
                 self.measure(chain, db(self.pr.peak) - db(TONE), also=heard,
                              why=f"; a note to the effect that takes notes: {silent:+.1f} -> {sounding:+.1f} dBFS, "
                                  f"its client {n.get_jackname()}")
+            elif name == "zynthian_packaged":
+                # what the installed package pins say decides: grouped when they pin the plugin in-process
+                self.add(chain, "PH/E")
+                self.add(chain, "PH/E")
+                time.sleep(1.0)
+                pinned = os.path.isdir("/usr/share/plugin-hostd/pins.d") and any(
+                    uri in open(os.path.join("/usr/share/plugin-hostd/pins.d", f)).read() and "verdict=in-process" in
+                    open(os.path.join("/usr/share/plugin-hostd/pins.d", f)).read()
+                    for f in os.listdir("/usr/share/plugin-hostd/pins.d") if f.endswith(".pins"))
+                self.measure(chain, 0.0, clients=1 if pinned else 2,
+                             why=f"; package pins {'pin it in-process' if pinned else 'do not pin it'}; reasons {dict(ph.daemon.reasons)}")
             elif name in ("zynthian_unqualified", "zynthian_qualified"):
                 a = self.add(chain, "PH/E")
                 if name == "zynthian_qualified":
