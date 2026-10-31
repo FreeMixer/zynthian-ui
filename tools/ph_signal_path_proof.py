@@ -8,7 +8,9 @@
 #   tools/ph_signal_path_proof.py --uri 'clap:/usr/lib/clap/omx-eq8.clap#org.openmixer.eq8'
 #
 # Needs a JACK server already running (a private one: JACK_DEFAULT_SERVER), plugin-hostd, python3-jack-client and
-# numpy. It starts its own daemon on a free port, one per scenario in a process of its own, and stops them. Exit 1 when a
+# numpy, and for notes_behind_effect omx-plugins-test (omx-test-sine-voice). The two zynthian_ scenarios run under a
+# Zynthian's settings (require_pins 1, first-use pins): with no verdict nothing is grouped, and with the verdict the
+# qualification sync writes (put on the pin here) the two run in one worker. It starts its own daemon on a free port, one per scenario in a process of its own, and stops them. Exit 1 when a
 # level is not the right one.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
@@ -28,7 +30,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FADER = 0.1  # -20 dB
 OTHER = 0.5  # -6 dB
 TONE = 0.1
-SCENARIOS = ("series", "parallel", "serial_then_parallel", "strip", "other", "mixbus_series", "mixbus_parallel")
+SCENARIOS = ("series", "parallel", "serial_then_parallel", "strip", "other", "mixbus_series", "mixbus_parallel",
+             "grouping_off", "edit_elsewhere", "notes_behind_effect", "zynthian_unqualified", "zynthian_qualified")
+NOTE_URI = "clap:/usr/libexec/omx-plugins/test/omx-test-sine-voice.clap#org.openmixer.test-sine-voice"
+# The daemon's settings per scenario, besides state_root: a Zynthian's own (require_pins, first-use pins) for the two
+# zynthian_ ones, grouping off for grouping_off, and grouping on for every other, since they measure grouped paths
+CONF = {"grouping_off": ["require_pins 0", "grouping off"],
+        "zynthian_unqualified": ["require_pins 1", "pin_mode first-use", "grouping on"],
+        "zynthian_qualified": ["require_pins 1", "pin_mode first-use", "grouping on"]}
 
 
 def db(x):
@@ -47,6 +56,8 @@ def scenario(name, uri, conf, daemon_bin):
             self.c = jack.Client("probe", no_start_server=True)
             self.o = self.c.outports.register("src")
             self.i = self.c.inports.register("in_1")
+            self.m = self.c.midi_outports.register("midi")
+            self.note = False
             self.pos, self.peak = 0, 0.0
             self.c.set_process_callback(self.process)
             self.c.activate()
@@ -55,6 +66,9 @@ def scenario(name, uri, conf, daemon_bin):
             self.o.get_array()[:] = TONE * np.sin(2 * np.pi * 1000.0 * np.arange(self.pos, self.pos + n) / self.c.samplerate)
             self.pos += n
             self.peak = max(self.peak, float(np.abs(self.i.get_array()).max()))
+            self.m.clear_buffer()
+            if self.note:
+                self.m.write_midi_event(0, (0x90, 60, 100))  # held: sent every cycle, the voice keeps sounding
 
     class gain_client:
         def __init__(self, name, gain, port_in="input_03a", port_out="output_03a"):
@@ -69,11 +83,14 @@ def scenario(name, uri, conf, daemon_bin):
             tmp = tempfile.mkdtemp()
             path = os.path.join(tmp, "plugin-hostd.conf")
             with open(path, "w") as f:
-                f.write(f"state_root {tmp}\nrequire_pins 0\n" + "".join(f"{line}\n" for line in conf))
+                settings = CONF.get(name, ["require_pins 0", "grouping on"]) + [f"pin_store {tmp}/pins"]
+                f.write(f"state_root {tmp}\n" + "".join(f"{line}\n" for line in settings + list(conf)))
             self.daemon = subprocess.Popen([daemon_bin, "-n", "-p", str(self.port), "-c", path], env=env,
                                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(1.0)
             self.info["PH/E"] = dict(self.info["PH/Amp"], URL=uri, NAME="E")
+            self.info["PH/N"] = dict(self.info["PH/Amp"], URL=NOTE_URI, NAME="N")  # an effect slot that takes notes
+            self.pins = os.path.join(tmp, "pins")
             self.pr = probe()
             sys.modules["zynautoconnect"].get_ports = lambda name, **kw: self.pr.c.get_ports(name)
 
@@ -91,17 +108,28 @@ def scenario(name, uri, conf, daemon_bin):
                     if frm and to and to[0].name not in [p.name for p in c.get_all_connections(frm[0])]:
                         c.connect(frm[0], to[0])
 
-        def measure(self, chain, want):
+        def wire_midi(self, chain):
+            c = self.pr.c
+            for dst in chain.midi_routes:
+                to = c.get_ports(f"^{dst}:", is_input=True, is_midi=True)
+                if to and to[0].name not in [p.name for p in c.get_all_connections(self.pr.m)]:
+                    c.connect(self.pr.m, to[0])
+
+        def pids(self):
+            return {r.split(":")[-1]: r.split(":")[1] for r in ph.daemon.call("worker_list")[1].split()}
+
+        def measure(self, chain, want, clients=None, also=True, why=""):
             self.wire(chain)
             time.sleep(1.5)
             self.pr.peak = 0.0
             time.sleep(1.0)
             got = db(self.pr.peak) - db(TONE)
+            want_clients = clients
             clients = sorted({p.name.split(":")[0] for p in self.pr.c.get_ports() if p.name.startswith("effect_")})
             workers = ph.daemon.call("worker_list")[1]
-            ok = abs(got - want) < 0.5
-            print(f"{'ok  ' if ok else 'FAIL'} {name}: {got:+.2f} dB, right answer {want:+.2f}; clients {clients}; workers {workers}",
-                  flush=True)
+            ok = abs(got - want) < 0.5 and also and (want_clients is None or len(clients) == want_clients)
+            print(f"{'ok  ' if ok else 'FAIL'} {name}: {got:+.2f} dB, right answer {want:+.2f}; clients {clients}"
+                  f"{'' if want_clients is None else f' (want {want_clients})'}; workers {workers}{why}", flush=True)
             # the daemon first: it would respawn a worker that goes before it
             with open(f"/proc/{self.daemon.pid}/task/{self.daemon.pid}/children") as f:
                 workers = f.read().split()
@@ -148,6 +176,54 @@ def scenario(name, uri, conf, daemon_bin):
                 self.foreign(chain)
                 self.add(chain, "PH/E")
                 want = -6.02
+            elif name == "grouping_off":
+                self.plugins(chain, 2)
+                time.sleep(1.0)
+                self.measure(chain, 0.0, clients=2, why="; grouping off: each plugin in a worker of its own")
+            elif name == "edit_elsewhere":
+                self.fader = gain_client("zynmixer_chan", FADER)
+                first = self.plugins(chain, 2)
+                self.strip(chain)
+                self.plugins(chain, 2)
+                before = self.pids().get("1002,1003")
+                for p in first:
+                    self.remove(chain, p)
+                time.sleep(1.0)
+                after = self.pids().get("1002,1003")
+                self.measure(chain, -20.0, also=before is not None and before == after,
+                             why=f"; the run after the strip, worker {before} -> {after}")
+            elif name == "notes_behind_effect":
+                self.add(chain, "PH/E")
+                n = self.add(chain, "PH/N")
+                time.sleep(1.0)
+                self.wire(chain)
+                self.wire_midi(chain)
+                time.sleep(1.5)
+                self.pr.peak = 0.0
+                time.sleep(1.0)
+                silent = db(self.pr.peak)
+                self.pr.note = True
+                time.sleep(1.0)
+                self.pr.peak = 0.0
+                time.sleep(1.0)
+                sounding = db(self.pr.peak)
+                heard = sounding > silent + 6.0
+                self.measure(chain, db(self.pr.peak) - db(TONE), also=heard,
+                             why=f"; a note to the effect that takes notes: {silent:+.1f} -> {sounding:+.1f} dBFS, "
+                                 f"its client {n.get_jackname()}")
+            elif name in ("zynthian_unqualified", "zynthian_qualified"):
+                a = self.add(chain, "PH/E")
+                if name == "zynthian_qualified":
+                    # the verdict the qualification sync writes, put on the pin the first add recorded
+                    time.sleep(0.5)
+                    with open(self.pins) as f:
+                        pin = [line for line in f.read().splitlines() if uri in line][-1].split(" verdict=")[0]
+                    line = pin if pin.startswith("pin_set ") else f"pin_set {pin}"
+                    ph.daemon.call(f"{line} verdict=in-process")
+                self.add(chain, "PH/E")
+                time.sleep(1.0)
+                self.measure(chain, 0.0, clients=1 if name == "zynthian_qualified" else 2,
+                             why=f"; reasons {dict(ph.daemon.reasons)}")
             elif name == "mixbus_series":
                 chain, _ = self.mixbus()
                 chain.rebuild_graph()
