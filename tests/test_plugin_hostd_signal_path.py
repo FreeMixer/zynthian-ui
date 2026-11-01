@@ -712,6 +712,7 @@ class test_the_worker_declares_mono_in_stereo(unittest.TestCase):
 
     def check(self, answers, expected):
         answers = dict(answers)
+        answers.setdefault("--version", "")  # every omx-clap-host takes it; one that names no version is a no
         answers["--help"] = "  -V, --version\n" + ("      --capabilities\n" if "--capabilities" in answers else "")
 
         def run(argv, **kw):
