@@ -656,6 +656,12 @@ class test_a_run_ends_where_the_width_changes(signal_path_case):
         return self.serve(descriptors={"clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono": self.descriptor("stereo", 2),
                                        "urn:test:amp": self.descriptor("mono", 1)})
 
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(ph.mono_in_stereo_cache, {"omx-clap-host": False})  # a worker before omx-clap-core#447
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_a_mono_effect_between_stereo_ones_groups_nothing(self):
         fake = self.serve_widths()
         chain = self.chain()
@@ -668,6 +674,59 @@ class test_a_run_ends_where_the_width_changes(signal_path_case):
         chain = self.chain()
         self.add(chain, CLAP), self.add(chain, CLAP), self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
         self.assertEqual(self.held(fake), {(1000, 1001), (1002, 1003)})
+
+
+
+class test_a_mono_effect_runs_inside_a_stereo_run(test_a_run_ends_where_the_width_changes):
+    """A worker of omx-clap-host 0.27.0 or later runs a mono member inside a stereo chain (omx-clap-core#447): its input
+    the sum of both channels, its output given to both, as zynautoconnect wires a mono plugin between stereo ones, so
+    the mono effect joins the stereo run instead of splitting it. A stereo member after a mono head still heads its own."""
+
+    def setUp(self):
+        super().setUp()
+        ph.mono_in_stereo_cache["omx-clap-host"] = True
+
+    def test_a_mono_effect_between_stereo_ones_groups_nothing(self):
+        fake = self.serve_widths()
+        chain = self.chain()
+        self.add(chain, CLAP), self.add(chain, "PH/Amp"), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001, 1002)}, "the mono effect joined the stereo run")
+        self.assertEqual(ph.daemon.chain_refused, {})
+
+    def test_members_of_one_width_still_share(self):
+        fake = self.serve_widths()
+        chain = self.chain()
+        self.add(chain, CLAP), self.add(chain, CLAP), self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.assertEqual(self.held(fake), {(1000, 1001, 1002, 1003)}, "mono members after a stereo head join it")
+
+    def test_a_stereo_effect_after_a_mono_head_heads_its_own_run(self):
+        fake = self.serve_widths()
+        chain = self.chain()
+        self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp"), self.add(chain, CLAP), self.add(chain, CLAP)
+        self.assertEqual(self.held(fake), {(1000, 1001), (1002, 1003)})
+
+
+class test_the_worker_version_decides_mono_in_stereo(unittest.TestCase):
+
+    def check(self, said, expected):
+        done = mock.Mock(stdout=said, stderr="")
+        with mock.patch.dict(ph.mono_in_stereo_cache, clear=True), \
+             mock.patch.object(ph.subprocess, "run", return_value=done) as run:
+            self.assertEqual(ph.mono_in_stereo(), expected, said)
+            ph.mono_in_stereo()
+        self.assertEqual(run.call_count, 1, "asked once")
+
+    def test_versions(self):
+        self.check("omx-clap-host version: 0.26.0\n", False)
+        self.check("omx-clap-host version: 0.27.0\n", True)
+        self.check("omx-clap-host version: 0.27.1~meas\n", True)
+        self.check("omx-clap-host version: 1.0.0\n", True)
+        self.check("", False)
+
+    def test_no_binary_is_no(self):
+        with mock.patch.dict(ph.mono_in_stereo_cache, clear=True), \
+             mock.patch.object(ph.subprocess, "run", side_effect=OSError("no such file")):
+            self.assertFalse(ph.mono_in_stereo())
 
 
 class test_a_refusal_is_asked_again(signal_path_case):
