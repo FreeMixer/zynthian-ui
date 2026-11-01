@@ -658,7 +658,7 @@ class test_a_run_ends_where_the_width_changes(signal_path_case):
 
     def setUp(self):
         super().setUp()
-        patcher = mock.patch.dict(ph.mono_in_stereo_cache, {"omx-clap-host": False})  # a worker before omx-clap-core#447
+        patcher = mock.patch.dict(ph.mono_in_stereo_cache, {"omx-clap-host": False})  # a worker that does not declare mono_in_stereo
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -678,7 +678,7 @@ class test_a_run_ends_where_the_width_changes(signal_path_case):
 
 
 class test_a_mono_effect_runs_inside_a_stereo_run(test_a_run_ends_where_the_width_changes):
-    """A worker of omx-clap-host 0.27.0 or later runs a mono member inside a stereo chain (omx-clap-core#447): its input
+    """A worker that declares mono_in_stereo (omx-clap-host 0.26.1 or later) runs a mono member inside a stereo chain (omx-clap-core#447): its input
     the sum of both channels, its output given to both, as zynautoconnect wires a mono plugin between stereo ones, so
     the mono effect joins the stereo run instead of splitting it. A stereo member after a mono head still heads its own."""
 
@@ -706,22 +706,31 @@ class test_a_mono_effect_runs_inside_a_stereo_run(test_a_run_ends_where_the_widt
         self.assertEqual(self.held(fake), {(1000, 1001), (1002, 1003)})
 
 
-class test_the_worker_version_decides_mono_in_stereo(unittest.TestCase):
+class test_the_worker_declares_mono_in_stereo(unittest.TestCase):
+    """The worker's --capabilities decides; its version only when it has no such option (older than 0.26.1)."""
 
-    def check(self, said, expected):
-        done = mock.Mock(stdout=said, stderr="")
+    def check(self, answers, expected):
+        def run(argv, **kw):
+            said = answers.get(argv[1])
+            if said is None:
+                return mock.Mock(stdout="", stderr="unrecognized option '%s'\n" % argv[1], returncode=1)
+            return mock.Mock(stdout=said, stderr="", returncode=0)
         with mock.patch.dict(ph.mono_in_stereo_cache, clear=True), \
-             mock.patch.object(ph.subprocess, "run", return_value=done) as run:
-            self.assertEqual(ph.mono_in_stereo(), expected, said)
+             mock.patch.object(ph.subprocess, "run", side_effect=run) as called:
+            self.assertEqual(ph.mono_in_stereo(), expected, answers)
+            n = called.call_count
             ph.mono_in_stereo()
-        self.assertEqual(run.call_count, 1, "asked once")
+        self.assertEqual(called.call_count, n, "asked once")
 
-    def test_versions(self):
-        self.check("omx-clap-host version: 0.26.0\n", False)
-        self.check("omx-clap-host version: 0.27.0\n", True)
-        self.check("omx-clap-host version: 0.27.1~meas\n", True)
-        self.check("omx-clap-host version: 1.0.0\n", True)
-        self.check("", False)
+    def test_the_declared_capability_decides(self):
+        self.check({"--capabilities": "chain_expect\nmono_in_stereo\n", "--version": "omx-clap-host version: 0.1.0\n"}, True)
+        self.check({"--capabilities": "chain_expect\n", "--version": "omx-clap-host version: 9.0.0\n"}, False)
+
+    def test_the_version_is_the_fallback(self):
+        self.check({"--version": "omx-clap-host version: 0.26.0\n"}, False)
+        self.check({"--version": "omx-clap-host version: 0.26.1\n"}, True)
+        self.check({"--version": "omx-clap-host version: 0.27.0~meas\n"}, True)
+        self.check({}, False)
 
     def test_no_binary_is_no(self):
         with mock.patch.dict(ph.mono_in_stereo_cache, clear=True), \
