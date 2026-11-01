@@ -379,22 +379,31 @@ def unwrap(member):
     return member.value if isinstance(member, member_info) else member
 
 
-MONO_IN_STEREO = (0, 27, 0)  # the omx-clap-host that runs a mono member inside a stereo chain, omx-clap-core#447
+MONO_IN_STEREO = (0, 26, 1)  # the omx-clap-host that runs it, for a worker that declares nothing, omx-clap-core#447
 mono_in_stereo_cache = {}  # worker binary => whether it does
+
+
+def worker_says(worker, option):
+    """What the worker prints for an option, "" when it does not answer it."""
+    try:
+        out = subprocess.run([worker, option], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout if out.returncode == 0 else ""
 
 
 def mono_in_stereo(worker="omx-clap-host"):
     """Detect once whether the installed worker runs a member of 1 channel in and out inside a stereo chain, its input
     the sum of both channels and its output given to both (omx-clap-core#447), the way zynautoconnect wires a mono
-    plugin between stereo ones. An older worker refuses that chain (OMX_CLAP_CHAIN_ERR_WIDTH)."""
+    plugin between stereo ones. The worker's --capabilities says it; a worker without that option is judged by its
+    version. An older worker refuses that chain (OMX_CLAP_CHAIN_ERR_WIDTH)."""
     if worker not in mono_in_stereo_cache:
-        try:
-            out = subprocess.run([worker, "--version"], capture_output=True, text=True, timeout=30)
-            said = out.stdout + out.stderr
-        except (OSError, subprocess.SubprocessError):
-            said = ""
-        found = re.search(r"(\d+)\.(\d+)\.(\d+)", said)
-        mono_in_stereo_cache[worker] = bool(found) and tuple(int(n) for n in found.groups()) >= MONO_IN_STEREO
+        declared = worker_says(worker, "--capabilities")
+        if declared:
+            mono_in_stereo_cache[worker] = "mono_in_stereo" in declared.split()
+        else:
+            found = re.search(r"(\d+)\.(\d+)\.(\d+)", worker_says(worker, "--version"))
+            mono_in_stereo_cache[worker] = bool(found) and tuple(int(n) for n in found.groups()) >= MONO_IN_STEREO
     return mono_in_stereo_cache[worker]
 
 

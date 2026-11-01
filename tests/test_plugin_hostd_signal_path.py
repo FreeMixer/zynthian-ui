@@ -707,13 +707,17 @@ class test_a_mono_effect_runs_inside_a_stereo_run(test_a_run_ends_where_the_widt
 
 
 class test_the_worker_declares_mono_in_stereo(unittest.TestCase):
-    """The worker's --capabilities decides; its version only when it has no such option (older than 0.26.1)."""
+    """The worker's --capabilities decides; its version only when its --help lists no such option (older than 0.26.1),
+    and an option the help does not list is never asked: omx-clap-host 0.26.0 starts a host on one it does not know."""
 
     def check(self, answers, expected):
+        answers = dict(answers)
+        answers["--help"] = "  -V, --version\n" + ("      --capabilities\n" if "--capabilities" in answers else "")
+
         def run(argv, **kw):
             said = answers.get(argv[1])
-            if said is None:
-                return mock.Mock(stdout="", stderr="unrecognized option '%s'\n" % argv[1], returncode=1)
+            # an omx-clap-host older than --capabilities warns of an option it does not know, says 0 and starts
+            self.assertIsNotNone(said, "asked an option the worker's --help does not list: %s" % argv[1])
             return mock.Mock(stdout=said, stderr="", returncode=0)
         with mock.patch.dict(ph.mono_in_stereo_cache, clear=True), \
              mock.patch.object(ph.subprocess, "run", side_effect=run) as called:
