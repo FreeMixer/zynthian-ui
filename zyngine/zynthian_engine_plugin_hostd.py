@@ -395,10 +395,11 @@ def worker_says(worker, option):
 def mono_in_stereo(worker="omx-clap-host"):
     """Detect once whether the installed worker runs a member of 1 channel in and out inside a stereo chain, its input
     the sum of both channels and its output given to both (omx-clap-core#447), the way zynautoconnect wires a mono
-    plugin between stereo ones. The worker's --capabilities says it; a worker without that option is judged by its
-    version. An older worker refuses that chain (OMX_CLAP_CHAIN_ERR_WIDTH)."""
+    plugin between stereo ones. The worker's --capabilities says it; a worker whose --help lists no such option is
+    judged by its version. An older worker refuses that chain (OMX_CLAP_CHAIN_ERR_WIDTH)."""
     if worker not in mono_in_stereo_cache:
-        declared = worker_says(worker, "--capabilities")
+        # an omx-clap-host older than the option warns, says 0 and starts a host: asked only when --help lists it
+        declared = worker_says(worker, "--capabilities") if "--capabilities" in worker_says(worker, "--help") else ""
         if declared:
             mono_in_stereo_cache[worker] = "mono_in_stereo" in declared.split()
         else:
