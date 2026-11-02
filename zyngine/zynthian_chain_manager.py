@@ -115,6 +115,7 @@ class zynthian_chain_manager:
         self.zyngine_counter = 0  # Appended to engine names for uniqueness
         self.zyngines = {}  # Map of instantiated engines, indexed by engine code
         self.processors = {}  # Dictionary of processor objects indexed by UID
+        self.add_refusal = None  # why the engine refused the last add_processor, None when it did not
         self.active_chain = None  # Active chain object => This should NEVER be None!!!
         self.active_midi_chain = None # Chain currently receiving active MIDI input
         self._pinned_chains = 1 # Quantity of pinned chains (shown pinned to right edge of mixer in UI)
@@ -1064,9 +1065,10 @@ class zynthian_chain_manager:
         proc_id : Processor UID (Default: Use next available ID)
         eng_config: Extended configuration for the engine (optional)
         midi_autolearn: True to auto-learn MIDI-CC based controllers (i.e. False when creating from state)
-        Returns : processor object or None on failure
+        Returns : processor object or None on failure; add_refusal says why when the engine refused it
         """
 
+        self.add_refusal = None
         if chain_id is not None and chain_id not in self.chains:
             logging.error(f"Chain '{chain_id}' doesn't exist!")
             return None
@@ -1101,10 +1103,20 @@ class zynthian_chain_manager:
                 self.remove_processor(chain_id, chain.synth_slots[0][0])   # Cannot have multiple synth engines
             chain.insert_processor(processor, slot)
 
-        engine = self.start_engine(processor, eng_code, eng_config)
+        try:
+            engine = self.start_engine(processor, eng_code, eng_config)
+        except Exception as e:
+            # The engine refused the processor (plugin-hostd's add answered an error): say why, and undo the insert
+            processor.engine = None  # the engine never took it
+            self.add_refusal = f"{self.engine_info[eng_code].get('NAME') or eng_code}: {getattr(e, 'meaning', None) or e}"
+            logging.error(f"Can't add processor '{eng_code}' to chain {chain_id}: {e}")
+            engine = None
         if not engine:
-            # Failed!! => Remove processor from list
-            del self.processors[proc_id]
+            # Failed!! => Remove processor from list, and from the chain it was inserted in
+            if chain_id is not None and processor in self.chains[chain_id].get_processors():
+                self.chains[chain_id].remove_processor(processor)
+            self.zyngines.pop(f"PH#{proc_id}", None)
+            self.processors.pop(proc_id, None)
             self.state_manager.end_busy("add_processor")
             return None
 
@@ -1565,6 +1577,7 @@ class zynthian_chain_manager:
         """
 
         self.state_manager.start_busy("set_chain_state", None, "loading chains")
+        dropped = []  # the refusals of the processors this restore could not add, which it leaves out
 
 
         if not merge:
@@ -1594,11 +1607,17 @@ class zynthian_chain_manager:
                         processor = self.add_processor(chain_id, eng_code, slot, proc_id=int(proc_id), eng_config=eng_config, midi_autolearn=False)
                         if processor:
                             slot = self.chains[chain_id].get_slot(processor)
+                        elif self.add_refusal:
+                            dropped.append(self.add_refusal)
                     slot += 1
             if "zctrls" in chain_state:
                 self.chains[chain_id].set_zctrls_state(chain_state["zctrls"])
         self.rebuild_optimisation_cache()
         self.state_manager.end_busy("set_chain_state")
+        if dropped:
+            logging.error("The snapshot was loaded without: " + "; ".join(dropped))
+            zynsigman.send_queued(zynsigman.S_GUI, zynsigman.SS_GUI_SHOW_MESSAGE,
+                                  message="Not loaded: " + "; ".join(dropped), timeout=8)
 
     def restore_presets(self):
         """Restore presets in active chain"""

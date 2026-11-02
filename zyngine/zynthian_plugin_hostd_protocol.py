@@ -41,6 +41,7 @@ class protocol:
         (daemon, daemon_failure), (host, host_failure) = (read(name, directory) for name in FILES)
         self.codes = {}  # name => code
         self.names = {}  # code => name, the first name a code has
+        self.meanings = {}  # code => what the code means, as plugin-hostd's protocol file says it
         # mod-host's codes, then the ones plugin-hostd adds
         for e in host.get("host_errors", []):
             self.codes.setdefault(e["name"], e["value"])
@@ -48,6 +49,8 @@ class protocol:
         for e in daemon.get("errors", []):
             self.codes[e["name"]] = e["code"]
             self.names[e["code"]] = e["macro"]
+            if e.get("meaning"):
+                self.meanings[e["code"]] = e["meaning"]
         missing = [n for n in needs if n not in self.codes]
         self.failure = daemon_failure or host_failure or (
             f"plugin-hostd's protocol files in {directory or PROTOCOL_DIR} do not declare {', '.join(missing)}"
@@ -62,3 +65,7 @@ class protocol:
 
     def name(self, code):
         return self.names.get(code, f"ERR_{-code}")
+
+    def meaning(self, code):
+        """What a code means, from the protocol file; its name where the file says nothing."""
+        return self.meanings.get(code) or self.name(code)
