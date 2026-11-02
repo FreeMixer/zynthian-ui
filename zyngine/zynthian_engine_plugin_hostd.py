@@ -367,7 +367,8 @@ class member_info:
     its ring, not through JACK, and Zynthian routes a chain's MIDI to each processor's client). widths: its main audio
     input and output channels, None when not known: a worker runs a chain only of members whose input and output are
     as wide as the head's output (omx-clap-core's chain library refuses any other, OMX_CLAP_CHAIN_ERR_WIDTH), so a run
-    ends where the width changes, a mono effect after a stereo one."""
+    ends where the width changes, a stereo effect after a mono one; a mono effect after a stereo one joins it only with
+    a worker that runs it (mono_in_stereo)."""
     __slots__ = ("value", "notes", "widths")
 
     def __init__(self, value, notes=False, widths=None):
@@ -378,8 +379,38 @@ def unwrap(member):
     return member.value if isinstance(member, member_info) else member
 
 
+MONO_IN_STEREO = (0, 26, 1)  # the omx-clap-host that runs it, for a worker that declares nothing, omx-clap-core#447
+mono_in_stereo_cache = {}  # worker binary => whether it does
+
+
+def worker_says(worker, option):
+    """What the worker prints for an option, "" when it does not answer it."""
+    try:
+        out = subprocess.run([worker, option], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout if out.returncode == 0 else ""
+
+
+def mono_in_stereo(worker="omx-clap-host"):
+    """Detect once whether the installed worker runs a member of 1 channel in and out inside a stereo chain, its input
+    the sum of both channels and its output given to both (omx-clap-core#447), the way zynautoconnect wires a mono
+    plugin between stereo ones. The worker's --capabilities says it; a worker whose --help lists no such option is
+    judged by its version. An older worker refuses that chain (OMX_CLAP_CHAIN_ERR_WIDTH)."""
+    if worker not in mono_in_stereo_cache:
+        # an omx-clap-host older than the option warns, says 0 and starts a host: asked only when --help lists it
+        declared = worker_says(worker, "--capabilities") if "--capabilities" in worker_says(worker, "--help") else ""
+        if declared:
+            mono_in_stereo_cache[worker] = "mono_in_stereo" in declared.split()
+        else:
+            found = re.search(r"(\d+)\.(\d+)\.(\d+)", worker_says(worker, "--version"))
+            mono_in_stereo_cache[worker] = bool(found) and tuple(int(n) for n in found.groups()) >= MONO_IN_STEREO
+    return mono_in_stereo_cache[worker]
+
+
 def joins(run, member):
-    """Whether a member may join the run in hand: it takes no notes, and its widths match the head's output."""
+    """Whether a member may join the run in hand: it takes no notes, and its widths match the head's output, or it is
+    mono under a stereo head and the worker runs that (mono_in_stereo)."""
     if not isinstance(member, member_info):
         return True
     if member.notes:
@@ -387,7 +418,9 @@ def joins(run, member):
     head = run[0] if run else None
     if member.widths is None or not isinstance(head, member_info) or head.widths is None:
         return True
-    return member.widths[0] == member.widths[1] == head.widths[1]
+    if member.widths[0] == member.widths[1] == head.widths[1]:
+        return True
+    return member.widths == (1, 1) and head.widths[1] == 2 and mono_in_stereo()
 
 
 def signal_steps(slots):
