@@ -39,6 +39,12 @@
 # with figures come first, then the ones without (not qualified, entries that are not plugins), then the
 # refused jalv rows, then the hidden ones. hosted_only keeps the rows plugin-hostd runs (PH/).
 #
+# A plugin installed both as CLAP and as LV2 is one row, never two: formats are invisible to the user. A CLAP row and an
+# LV2 row of one name are one plugin, and the one placed worse gives way: shown before hidden, then by tier (live,
+# studio, not qualified, a refused jalv row), then CLAP before LV2 (omx-clap-host's own format), then plugin-hostd
+# before jalv. Rows of one format stay as they are: two plugins that share a name, and an LV2 plugin's jalv row beside
+# its plugin-hostd one, which is a choice of engine and not of format.
+#
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 #
 # This program is free software; you can redistribute it and/or modify it under the terms
@@ -116,11 +122,40 @@ def is_plugin(key):
     return key.startswith(("PH/", "JV/"))
 
 
+def plugin_identity(key, info):
+    """(name, format) of a plugin row: its name, case and spacing aside, None when it has none; clap or lv2."""
+    name = " ".join((info.get("NAME") or "").casefold().split()) or None
+    return name, "clap" if key.startswith("PH/clap:") else "lv2"
+
+
+def format_rank(key):
+    """CLAP before LV2, plugin-hostd before jalv: the order a tie between two rows of one plugin is broken in."""
+    return 0 if key.startswith("PH/clap:") else 1 if key.startswith("PH/") else 2
+
+
+def one_row_per_plugin(rows):
+    """rows as menu_entries builds them, (rank, n, key, text, greyed, figure, identity), with each plugin's rows
+    reduced to the best placed: shown before hidden, then by rank, then by format_rank, then in their own order. A row
+    gives way only to a better one of the same name in the other format."""
+    order = lambda r: (r[4], r[0], format_rank(r[2]), r[1])
+    by_name = {}
+    for row in rows:
+        if row[6] is not None and row[6][0] is not None:
+            by_name.setdefault(row[6][0], []).append(row)
+    dropped = set()
+    for group in by_name.values():
+        for row in group:
+            if any(order(other) < order(row) and other[6][1] != row[6][1] for other in group):
+                dropped.add(id(row))
+    return [row for row in rows if id(row) not in dropped]
+
+
 def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, show=False, order="tier", hosted_only=False):
     """[(key, text, greyed)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
     first, then studio, then the rest in their own order; or by name or by a figure, the rows with
     figures first, then the rest. Then the jalv rows of the plugins plugin-hostd refuses, tagged
     refused; hidden ones dropped, or last and greyed when show is set. hosted_only keeps the PH rows.
+    A plugin present in more than one format is one row, the best placed (one_row_per_plugin).
     facts_of(url) gives a plugin's Facts; entries that are not plugins keep their title."""
     rows = []
     for n, (key, info) in enumerate(engines.items()):
@@ -128,20 +163,22 @@ def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, show=False, order="tier
             continue
         title = info["TITLE"]
         if not is_plugin(key):
-            rows.append((RANK[None], n, key, title, False, None))
+            rows.append((RANK[None], n, key, title, False, None, None))
             continue
+        ident = plugin_identity(key, info)
         facts = facts_of(info.get("URL", ""))
         p = place(facts, live_ms)
         if p.reason == "refused" and key.startswith("JV/"):
-            rows.append((RANK["refused"], n, key, f"{title}  refused", False, None))
+            rows.append((RANK["refused"], n, key, f"{title}  refused", False, None, ident))
             continue
         if p.hidden and not show:
             continue
         tier = "hidden" if p.hidden else p.tier
-        rows.append((RANK[tier], n, key, f"{title}  {p.tag}", p.hidden, figure(facts, order) if tier != "unverified" else None))
+        rows.append((RANK[tier], n, key, f"{title}  {p.tag}", p.hidden, figure(facts, order) if tier != "unverified" else None, ident))
+    rows = one_row_per_plugin(rows)
     if order == "tier":
         rows.sort(key=lambda r: r[:2])
     else:
         # live and studio are one group: the figure orders them
         rows.sort(key=lambda r: (max(r[0], RANK["studio"]), r[5] is None, r[5] or 0, r[3].lower(), r[1]))
-    return [(key, text, greyed) for _, _, key, text, greyed, _ in rows]
+    return [(key, text, greyed) for _, _, key, text, greyed, _, _ in rows]
