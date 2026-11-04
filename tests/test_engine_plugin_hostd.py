@@ -303,12 +303,34 @@ class test_protocol(plugin_hostd_case):
             empty = ph.zynthian_plugin_hostd_protocol.protocol(os.path.join(self.tmp, "none"), needs=ph.NEEDS)
         self.assertFalse(empty.loaded)
         self.assertEqual(len(logs.records), 1, "said once, when the files are read")
-        self.assertIn(os.path.join(self.tmp, "none", "protocol.json"), logs.output[0])
+        self.assertIn(os.path.join(self.tmp, "none", "plugin-hostd.json"), logs.output[0])
         with mock.patch.object(ph, "protocol", empty):
             with self.assertRaises(ph.plugin_hostd_down) as down:
                 ph.daemon.ensure()
-        self.assertIn(os.path.join(self.tmp, "none", "protocol.json"), str(down.exception),
+        self.assertIn(os.path.join(self.tmp, "none", "plugin-hostd.json"), str(down.exception),
                       "the refusal names the file")
+
+    def test_the_files_are_read_where_libplugin_hostd_protocol0_installs_them(self):
+        """plugin-hostd 0.16.0 moved them: /usr/share/plugin-hostd-protocol/plugin-hostd.json, no protocol.json."""
+        new_home = self.declared([{"name": "ODD", "macro": "PHD_ERR_ODD", "code": -777}])
+        os.rename(os.path.join(new_home, "protocol.json"), os.path.join(new_home, "plugin-hostd.json"))
+        old_home = os.path.join(self.tmp, "old")
+        os.makedirs(old_home)
+        with open(os.path.join(old_home, "protocol.json"), "w") as f:
+            json.dump({"errors": [{"name": "ODD", "macro": "PHD_ERR_OLD", "code": -778}]}, f)
+        with open(os.path.join(old_home, "mod-host.json"), "w") as f:
+            json.dump({"host_errors": []}, f)
+        places = ((new_home, "plugin-hostd.json"), (old_home, "protocol.json"))
+        with mock.patch.object(ph.zynthian_plugin_hostd_protocol, "PROTOCOL_DIR", None), \
+                mock.patch.object(ph.zynthian_plugin_hostd_protocol, "PLACES", places):
+            p = ph.zynthian_plugin_hostd_protocol.protocol()
+            self.assertTrue(p.loaded, p.failure)
+            self.assertEqual(p.code("ODD"), -777, "the new home is read first")
+            self.assertEqual(ph.zynthian_plugin_hostd_protocol.protocol(new_home).code("ODD"), -777,
+                             "a directory given holds the daemon's file under its new name")
+            os.remove(os.path.join(new_home, "plugin-hostd.json"))
+            self.assertEqual(ph.zynthian_plugin_hostd_protocol.protocol().code("ODD"), -778,
+                             "a plugin-hostd before 0.16.0 still has its files read")
 
     def test_mod_host_json_missing_is_a_failure_too(self):
         directory = self.declared()
@@ -336,14 +358,17 @@ class test_protocol(plugin_hostd_case):
             self.serve()
             self.add(self.chain(), "PH/Amp")
 
-    @unittest.skipUnless(os.path.isfile("/usr/share/plugin-hostd/protocol.json"), "plugin-hostd is not installed")
+    @unittest.skipUnless(any(os.path.isfile(os.path.join(d, n)) for d, n in ph.zynthian_plugin_hostd_protocol.PLACES),
+                         "plugin-hostd is not installed")
     def test_the_fixture_says_what_the_installed_files_say(self):
-        installed = ph.zynthian_plugin_hostd_protocol.protocol("/usr/share/plugin-hostd", needs=ph.NEEDS)
+        with mock.patch.object(ph.zynthian_plugin_hostd_protocol, "PROTOCOL_DIR", None):
+            home = ph.zynthian_plugin_hostd_protocol.daemon_file()
+        installed = ph.zynthian_plugin_hostd_protocol.protocol(home[0], needs=ph.NEEDS)
         self.assertTrue(installed.loaded, installed.failure)
         for name, code in ph.protocol.codes.items():
             self.assertEqual(installed.codes.get(name), code, f"the fixture retypes {name}")
-        readiness = [ph.zynthian_plugin_hostd_protocol.read("protocol.json", d)[0]["readiness"]
-                     for d in ("/usr/share/plugin-hostd", os.path.join(FIXTURES, "protocol"))]
+        readiness = [ph.zynthian_plugin_hostd_protocol.read(*reversed(home))[0]["readiness"],
+                     ph.zynthian_plugin_hostd_protocol.read("protocol.json", os.path.join(FIXTURES, "protocol"))[0]["readiness"]]
         self.assertEqual(readiness[0], readiness[1], "the start script stand-in waits for the installed line")
 
     def test_ready_is_the_start_scripts_to_say(self):
