@@ -1290,17 +1290,38 @@ class test_catalogue(plugin_hostd_case):
             self.assertEqual(key, "PH/" + info["URL"])
             self.assertEqual(cat.clap_plugins[key]["path"], info["URL"].split("#")[0][5:])
 
-    def test_titles_say_the_format_and_one_clap_id_in_two_directories_is_listed_once(self):
+    def test_one_clap_id_in_two_directories_is_listed_once(self):
         surge = CLAP_SCAN_MVERB.replace("studio.kx.distrho.MVerb", "org.surge-synth-team.surge-xt")
         scan = "file /root/.clap/SurgeXT.clap\n" + surge + "file /usr/local/lib/clap/Surge XT.clap\n" + surge
         added = cat.add_catalogue({"JV/Surge": lv2_info("Surge", "urn:surge")}, clap=cat.parse_clap_scan(scan),
                                   binary=FAKE)
         self.assertEqual(sorted(added), ["PH/Surge", "PH/clap:/root/.clap/SurgeXT.clap#org.surge-synth-team.surge-xt"])
-        titles = sorted(info["TITLE"] for info in added.values())
-        self.assertEqual(len(titles), len(set(titles)))
-        self.assertTrue(added["PH/Surge"]["TITLE"].endswith("(LV2 PH)"))
-        self.assertTrue(added["PH/clap:/root/.clap/SurgeXT.clap#org.surge-synth-team.surge-xt"]["TITLE"]
-                        .endswith("(CLAP PH)"))
+
+    SURGE_SCAN = "file /usr/lib/clap/Surge XT.clap\n" + CLAP_SCAN_MVERB.replace(
+        'studio.kx.distrho.MVerb "MVerb"', 'org.surge-synth-team.surge-xt "Surge XT"')
+    SURGE_CLAP = "PH/clap:/usr/lib/clap/Surge XT.clap#org.surge-synth-team.surge-xt"
+
+    def test_titles_keep_the_engine_mark_and_leave_the_format_out(self):
+        added = cat.add_catalogue({"JV/Obxd": lv2_info("Obxd", "urn:obxd"), "JV/surge": lv2_info("Surge XT", "urn:surge")},
+                                  clap=cat.parse_clap_scan(self.SURGE_SCAN + "file /usr/lib/clap/mverb.clap\n" + CLAP_SCAN_MVERB),
+                                  binary=FAKE)
+        self.assertEqual(added["PH/Obxd"]["TITLE"], "Obxd (PH)")
+        self.assertEqual(added[self.SURGE_CLAP]["TITLE"], "Surge XT (PH)")
+        for info in added.values():
+            self.assertTrue(info["TITLE"].endswith(" (PH)"), info["TITLE"])
+            self.assertNotRegex(info["TITLE"], r"\b(LV2|CLAP)\b")
+            self.assertNotRegex(info["DESCR"], r"\b(LV2|CLAP)\b", "the format is said once, in the format line")
+
+    def test_the_detail_line_names_the_format_and_the_other_installed_build(self):
+        added = cat.add_catalogue({"JV/Obxd": lv2_info("Obxd", "urn:obxd"), "JV/surge": lv2_info("surge  XT", "urn:surge")},
+                                  clap=cat.parse_clap_scan(self.SURGE_SCAN + "file /usr/lib/clap/mverb.clap\n" + CLAP_SCAN_MVERB),
+                                  binary=FAKE)
+        self.assertEqual(added[self.SURGE_CLAP]["FORMAT_LINE"],
+                         "CLAP, run by plugin-hostd (an LV2 build is also installed)")
+        self.assertEqual(added["PH/surge"]["FORMAT_LINE"], "LV2, run by plugin-hostd (a CLAP build is also installed)")
+        self.assertEqual(added["PH/Obxd"]["FORMAT_LINE"], "LV2, run by plugin-hostd")
+        self.assertEqual(added["PH/clap:/usr/lib/clap/mverb.clap#studio.kx.distrho.MVerb"]["FORMAT_LINE"],
+                         "CLAP, run by plugin-hostd")
 
     def test_clap_scan_text_is_parsed(self):
         plugins = cat.parse_clap_scan(CLAP_SCAN)
