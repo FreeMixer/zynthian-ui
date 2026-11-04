@@ -250,7 +250,13 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.info_canvas.itemconfigure(self.quality_stars_label, text=quality_stars)
         complexity_stars = "⚙️" * eng_info["COMPLEX"]
         self.info_canvas.itemconfigure(self.complexity_stars_label, text=complexity_stars)
-        self.info_canvas.itemconfigure(self.description_label, text=eng_info["DESCR"])
+        self.info_canvas.itemconfigure(self.description_label, text=self.description_text(eng_info))
+
+    @staticmethod
+    def description_text(eng_info):
+        """The description the info panel shows: the engine's, then the line naming a plugin's format, which the
+        menu titles leave out."""
+        return "\n\n".join(t for t in (eng_info.get("DESCR", ""), eng_info.get("FORMAT_LINE", "")) if t)
 
     def show_details(self, eng_code=None):
         eng_info = self.get_info(eng_code)
@@ -272,6 +278,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
   <div class="engine_path">{path}</div>
   <div class="quality">Quality: <span class="stars">{"★" * eng_info["QUALITY"]}</span></div>
   <div class="complexity">Complexity: <span class="stars">{"⚙️" * eng_info["COMPLEX"]}</span></div>
+  {f'<div class="format">{eng_info["FORMAT_LINE"]}</div>' if eng_info.get("FORMAT_LINE") else ""}
   <p class="description">{description}</p>
  </body>
 </html>
@@ -633,7 +640,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.zyngui.tts.announce(f"Category: {self.engine_cats[self.cat_index]}", False, False, False)
         self.zyngui.tts.announce(f"Engine: {self.list_data[self.index][2]}", False, False, False)
         complex = ["No", "Minimal", "Low", "Medium", "High", "Maximum"][eng_info["COMPLEX"]]
-        self.zyngui.tts.announce(f"{eng_info['QUALITY']} stars. {complex} complexity. {eng_info['DESCR']}", False, False, False)
+        self.zyngui.tts.announce(f"{eng_info['QUALITY']} stars. {complex} complexity. {self.description_text(eng_info)}", False, False, False)
         self.zyngui.tts.announce(f"{self.index + 1} of {len(self.list_data)}", False, False, False)
 
 # ------------------------------------------------------------------------------

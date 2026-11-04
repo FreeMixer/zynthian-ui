@@ -157,6 +157,21 @@ class engine_menu(unittest.TestCase):
         self.screen.fill_list()
         self.assertEqual([row[2] for row in self.screen.filled], ["Linear EQ (PH)", "Fast Comp (PH)", "Refused Amp (PH)"])
 
+    def test_the_info_panel_shows_the_format_line_after_the_description(self):
+        surge = {"NAME": "Surge XT", "TYPE": "MIDI Synth", "CAT": "Synth", "QUALITY": 0, "COMPLEX": 0,
+                 "DESCR": "Plugin by Surge Synth Team",
+                 "FORMAT_LINE": "CLAP, run by plugin-hostd (an LV2 build is also installed)"}
+        self.assertEqual(self.screen.description_text(surge), "Plugin by Surge Synth Team\n\n"
+                         "CLAP, run by plugin-hostd (an LV2 build is also installed)")
+        self.assertEqual(self.screen.description_text({"DESCR": "A jalv plugin"}), "A jalv plugin")
+        self.assertEqual(self.screen.description_text({"DESCR": "", "FORMAT_LINE": "LV2, run by plugin-hostd"}),
+                         "LV2, run by plugin-hostd")
+        self.screen.engine_cats = []
+        self.screen.get_info = lambda code=None: surge
+        self.screen.show_details("PH/surge")
+        html = self.screen.zyngui.screens['help'].set_html.call_args.args[0]
+        self.assertIn('<div class="format">CLAP, run by plugin-hostd (an LV2 build is also installed)</div>', html)
+
     def test_the_enable_view_carries_a_ph_flag_to_its_jalv_entry(self):
         self.engines["JV/Linear EQ"] = info("Linear EQ", "urn:q:slow", title="Linear EQ")
         self.engines["PH/Linear EQ"] = self.engines.pop("PH/Slow")

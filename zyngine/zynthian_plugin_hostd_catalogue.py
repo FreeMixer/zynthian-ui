@@ -127,6 +127,26 @@ def refused_plugins():
     return {uri for uri, verdict in qualification.read_pins(qualification.pin_paths()).items() if verdict == "refused"}
 
 
+def plugin_name(info):
+    """A plugin's name, case and spacing aside, as the menus match a CLAP row and an LV2 row of one plugin."""
+    return " ".join((info.get("NAME") or "").casefold().split()) or None
+
+
+def add_format_lines(added):
+    """Give each entry its FORMAT_LINE, the line the detail panel shows: the format the row runs, as the menu titles
+    leave it out, and the other build when the plugin is installed in both formats, e.g.
+    "CLAP, run by plugin-hostd (an LV2 build is also installed)"."""
+    formats = {}
+    for info in added.values():
+        formats.setdefault(plugin_name(info), set()).add(info["FORMAT"])
+    for info in added.values():
+        line = f"{info['FORMAT']}, run by plugin-hostd"
+        others = sorted(formats.get(plugin_name(info), set()) - {info["FORMAT"]}) if plugin_name(info) else []
+        for other in others:
+            line += f" ({'an' if other == 'LV2' else 'a'} {other} build is also installed)"
+        info["FORMAT_LINE"] = line
+
+
 def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
     """Add a PH entry for each LV2 instrument and effect in engines and each CLAP one omx-clap-scan
     finds, to engines and to zynthian_lv2's lists by type. They are enabled when plugin-hostd is
@@ -150,7 +170,7 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
     for key, info in list(engines.items()):
         if key.startswith("JV/") and info.get("TYPE") in ENGINE_TYPES:
             entry = {k: v for k, v in info.items() if k != "ENGINE"}
-            entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (LV2 PH)",
+            entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (PH)", "FORMAT": "LV2",
                           "ENABLED": bool(info.get("ENABLED")) and available})
             added["PH/" + key[3:]] = entry
     first_dir = {}  # CLAP id => the directory it was first found in, in search order
@@ -164,11 +184,12 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
         url = f"clap:{plugin['path']}#{plugin['id']}"
         key = "PH/" + url
         clap_plugins[key] = plugin
-        added[key] = {"ID": "phc" + url, "NAME": plugin["name"], "TITLE": f"{plugin['name']} (CLAP PH)",
-                      "TYPE": etype, "CAT": next((CLAP_CATS[f] for f in plugin["features"] if f in CLAP_CATS), "Other"),
+        added[key] = {"ID": "phc" + url, "NAME": plugin["name"], "TITLE": f"{plugin['name']} (PH)",
+                      "FORMAT": "CLAP", "TYPE": etype, "CAT": next((CLAP_CATS[f] for f in plugin["features"] if f in CLAP_CATS), "Other"),
                       "ENABLED": available, "INDEX": 9999, "URL": url, "UI": "",
-                      "DESCR": f"CLAP plugin by {plugin['vendor']}, run by plugin-hostd",
+                      "DESCR": f"Plugin by {plugin['vendor']}",
                       "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
+    add_format_lines(added)
     engines.update(added)
     by_ph = plugin_engine() == "plugin-hostd"
     if by_ph and not available:
