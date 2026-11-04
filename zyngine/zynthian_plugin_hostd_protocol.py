@@ -18,13 +18,29 @@ import os
 import json
 import logging
 
-PROTOCOL_DIR = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR", "/usr/share/plugin-hostd")
-FILES = ("protocol.json", "mod-host.json")
+# Where the files are: libplugin-hostd-protocol0 (plugin-hostd 0.16.0 on) installs them in its own directory, the
+# daemon's as plugin-hostd.json; plugin-hostd before 0.16.0 installed that one as protocol.json in its directory.
+# The first place that holds the daemon's file is the one read.
+PLACES = (("/usr/share/plugin-hostd-protocol", "plugin-hostd.json"), ("/usr/share/plugin-hostd", "protocol.json"))
+DAEMON_FILES = tuple(name for _, name in PLACES)
+HOST_FILE = "mod-host.json"
+PROTOCOL_DIR = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR")
+
+
+def daemon_file(directory=None):
+    """(directory, name) of the daemon's protocol file: in the given directory (or ZYNTHIAN_PLUGIN_HOSTD_PROTOCOL_DIR)
+    under either name, else the first of PLACES that holds it; the first candidate when none does."""
+    directory = directory or PROTOCOL_DIR
+    places = [(directory, name) for name in DAEMON_FILES] if directory else list(PLACES)
+    for d, name in places:
+        if os.path.isfile(os.path.join(d, name)):
+            return d, name
+    return places[0]
 
 
 def read(name, directory=None):
     """The JSON file plugin-hostd installs under that name; (contents, None), or ({}, why it is not there)."""
-    path = os.path.join(directory or PROTOCOL_DIR, name)
+    path = os.path.join(directory or daemon_file()[0], name)
     try:
         with open(path) as f:
             return json.load(f), None
@@ -38,7 +54,8 @@ class protocol:
     declares, leaves loaded False and failure saying which, logged once as an error here."""
 
     def __init__(self, directory=None, needs=()):
-        (daemon, daemon_failure), (host, host_failure) = (read(name, directory) for name in FILES)
+        directory, name = daemon_file(directory)
+        (daemon, daemon_failure), (host, host_failure) = (read(n, directory) for n in (name, HOST_FILE))
         self.codes = {}  # name => code
         self.names = {}  # code => name, the first name a code has
         self.meanings = {}  # code => what the code means, as plugin-hostd's protocol file says it
@@ -53,7 +70,7 @@ class protocol:
                 self.meanings[e["code"]] = e["meaning"]
         missing = [n for n in needs if n not in self.codes]
         self.failure = daemon_failure or host_failure or (
-            f"plugin-hostd's protocol files in {directory or PROTOCOL_DIR} do not declare {', '.join(missing)}"
+            f"plugin-hostd's protocol files in {directory} do not declare {', '.join(missing)}"
             if missing else None)
         self.loaded = self.failure is None
         if self.failure:
