@@ -324,6 +324,53 @@ class pi5_records(unittest.TestCase):
         self.assertEqual([text for _, text, _ in shown][-2:], ["Refused  refused", "Refused (PH)  hidden · refused"])
 
 
+class one_row_per_plugin(unittest.TestCase):
+    """A plugin installed as CLAP and as LV2 is one row, the best placed; formats are invisible to the user."""
+
+    KARS_LV2 = "http://distrho.sf.net/plugins/Kars"
+    KARS_CLAP = "clap:/usr/lib/clap/Kars.clap#studio.kx.distrho.Kars"
+    SURGE_LV2 = "https://surge-synthesizer.github.io/lv2/surge-xt"
+    SURGE_CLAP = "clap:/usr/local/lib/clap/Surge XT.clap#org.surge-synth-team.surge-xt"
+
+    def rows(self, engines, facts, show=False):
+        return tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), show=show)
+
+    def test_a_plugin_in_both_formats_placed_alike_is_one_row_the_clap_one(self):
+        engines = {"PH/" + self.KARS_LV2: {"NAME": "Kars", "TITLE": "Kars (LV2 PH)", "URL": self.KARS_LV2},
+                   "PH/" + self.KARS_CLAP: {"NAME": "Kars", "TITLE": "Kars (CLAP PH)", "URL": self.KARS_CLAP}}
+        live = measured(0.0, rt=True, soaked=True, frames=0, declared=0)
+        rows = self.rows(engines, {self.KARS_LV2: live, self.KARS_CLAP: live})
+        self.assertEqual([key for key, _, _ in rows], ["PH/" + self.KARS_CLAP])
+
+    def test_the_better_placed_format_wins_whichever_it_is(self):
+        engines = {"PH/" + self.SURGE_LV2: {"NAME": "Surge XT", "TITLE": "Surge XT (LV2 PH)", "URL": self.SURGE_LV2},
+                   "PH/" + self.SURGE_CLAP: {"NAME": "Surge XT", "TITLE": "Surge XT (CLAP PH)", "URL": self.SURGE_CLAP}}
+        studio = measured(0.7, rt=False, soaked=True, frames=34, declared=0, pin="isolated")
+        self.assertEqual([text for _, text, _ in self.rows(engines, {self.SURGE_CLAP: studio})],
+                         ["Surge XT (CLAP PH)  studio 34/0fr RT-alone cost?"], "the LV2 row, not qualified, gives way")
+        self.assertEqual([key for key, _, _ in self.rows(engines, {self.SURGE_LV2: studio})], ["PH/" + self.SURGE_LV2])
+
+    def test_a_refused_jalv_row_gives_way_to_the_other_format_and_a_hidden_row_to_a_shown_one(self):
+        engines = {"JV/Obxd": {"NAME": "Obxd", "TITLE": "Obxd", "URL": "https://obxd.wordpress.com"},
+                   "PH/clap:/usr/lib/clap/OB-Xd.clap#obxd": {"NAME": "OBXD", "TITLE": "OBXD (CLAP PH)",
+                                                              "URL": "clap:/usr/lib/clap/OB-Xd.clap#obxd"}}
+        facts = {"https://obxd.wordpress.com": NO_FACTS._replace(pin="refused"),
+                 "clap:/usr/lib/clap/OB-Xd.clap#obxd": measured(0.7, rt=False, soaked=True, frames=34, pin="isolated")}
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts, show=True)], ["PH/clap:/usr/lib/clap/OB-Xd.clap#obxd"])
+
+    def test_an_lv2_plugins_jalv_row_beside_its_plugin_hostd_row_is_a_choice_of_engine_and_stays(self):
+        engines = {"PH/urn:a": {"NAME": "Amp", "TITLE": "Amp (LV2 PH)", "URL": "urn:a"},
+                   "JV/urn:a": {"NAME": "Amp", "TITLE": "Amp", "URL": "urn:a"}}
+        facts = {"urn:a": measured(1.0, rt=True, soaked=True, frames=48)}
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts)], ["PH/urn:a", "JV/urn:a"])
+
+    def test_two_plugins_of_one_format_that_share_a_name_stay_two_rows(self):
+        engines = {"PH/urn:a": {"NAME": "Reverb", "TITLE": "Reverb (LV2 PH)", "URL": "urn:a"},
+                   "PH/urn:b": {"NAME": "Reverb", "TITLE": "Reverb (LV2 PH)", "URL": "urn:b"}}
+        facts = {"urn:a": measured(1.0, rt=True, soaked=True, frames=48)}
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts)], ["PH/urn:a", "PH/urn:b"])
+
+
 class record_reading(unittest.TestCase):
 
     def read(self, *records):
@@ -348,6 +395,16 @@ class record_reading(unittest.TestCase):
     def test_a_clap_record_without_a_path_or_an_lv2_one_without_an_id_is_not_keyed(self):
         self.assertEqual(self.read(self.record("t", 1, binary={})), {})
         self.assertEqual(self.read(self.record("t", 1, plugin={"format": "lv2"})), {})
+
+    def test_a_declared_latency_with_no_measured_one_is_shown_as_declared_and_never_makes_a_plugin_live(self):
+        rec = self.record("t", 0)
+        rec["measurements"]["grid"][0]["latency"] = {"declaredFrames": 64, "unmeasuredReason": "silent-output",
+                                                      "code": "hosting.latency.unmeasured"}
+        rec["measurements"]["grid"][0]["rtSafety"] = {"interposer": True, "swept": True, "allocations": 0, "locks": 0,
+                                                      "syscalls": 0}
+        facts = qual.facts_of(self.read(rec)["clap:/a.clap#org.x"], None, 48000)
+        self.assertEqual((facts.frames, facts.declared_frames, facts.worst_latency_ms), (None, 64, None))
+        self.assertEqual(tiers.place(facts).tag.split()[:2], ["studio", "?/64fr"])
 
     def test_a_failed_point_is_no_reading(self):
         rec = self.record("t", 1)
