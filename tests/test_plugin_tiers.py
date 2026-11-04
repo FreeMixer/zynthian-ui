@@ -396,6 +396,16 @@ class record_reading(unittest.TestCase):
         self.assertEqual(self.read(self.record("t", 1, binary={})), {})
         self.assertEqual(self.read(self.record("t", 1, plugin={"format": "lv2"})), {})
 
+    def test_a_declared_latency_with_no_measured_one_is_shown_as_declared_and_never_makes_a_plugin_live(self):
+        rec = self.record("t", 0)
+        rec["measurements"]["grid"][0]["latency"] = {"declaredFrames": 64, "unmeasuredReason": "silent-output",
+                                                      "code": "hosting.latency.unmeasured"}
+        rec["measurements"]["grid"][0]["rtSafety"] = {"interposer": True, "swept": True, "allocations": 0, "locks": 0,
+                                                      "syscalls": 0}
+        facts = qual.facts_of(self.read(rec)["clap:/a.clap#org.x"], None, 48000)
+        self.assertEqual((facts.frames, facts.declared_frames, facts.worst_latency_ms), (None, 64, None))
+        self.assertEqual(tiers.place(facts).tag.split()[:2], ["studio", "?/64fr"])
+
     def test_a_failed_point_is_no_reading(self):
         rec = self.record("t", 1)
         rec["measurements"]["grid"][0]["outcome"] = "probe.crashed"

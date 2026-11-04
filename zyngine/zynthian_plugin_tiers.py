@@ -18,7 +18,8 @@
 #
 # <figures> are the record's, as it holds them, at the current rate and quantum, separated by a space
 # and short enough that a row of half the 1024 px screen shows all three after a long title:
-#   latency  64/0fr           measured/declared frames, 64fr when the record declares none; lat? unknown
+#   latency  64/0fr           measured/declared frames, 64fr when the record declares none; ?/64fr when only the
+#                             plugin's declared figure is known (a note that did not sound); lat? unknown
 #   RT       RT-ok            no allocation, lock, syscall or thread violation under the sweep;
 #                             RT-alone: some, so plugin-hostd isolates it in its own worker, never
 #                             grouped with RT-safe plugins (it is not refused); RT-?: no
@@ -83,7 +84,7 @@ def number_text(n):
 
 def latency_text(facts):
     if facts.frames is None:
-        return "lat?"
+        return "lat?" if facts.declared_frames is None else f"?/{number_text(facts.declared_frames)}fr"
     declared = "" if facts.declared_frames is None else f"/{number_text(facts.declared_frames)}"
     return f"{number_text(facts.frames)}{declared}fr"
 

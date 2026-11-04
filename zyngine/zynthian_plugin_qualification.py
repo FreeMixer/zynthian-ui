@@ -142,6 +142,10 @@ def record_entry(rec):
             if isinstance(lat.get("declaredFrames"), (int, float)):
                 reading["declaredFrames"] = lat["declaredFrames"]
             per_rate.setdefault(str(p["rate"]), reading)
+        elif isinstance(lat, dict) and isinstance(lat.get("declaredFrames"), (int, float)) and isinstance(p.get("rate"), int):
+            # no measured figure (an instrument whose note did not sound): the plugin's own declared one, shown as such and
+            # never read as a measurement, so it moves no plugin between tiers
+            per_rate.setdefault(str(p["rate"]), {"declaredFrames": lat["declaredFrames"]})
     plugin["latency"] = {"perRate": per_rate}
     plugin["cost"] = {"grid": [{"rate": p.get("rate"), "quantum": p.get("quantum"), "median": p["cost"].get("median")}
                                for p in ok if isinstance(p.get("cost"), dict)]}
