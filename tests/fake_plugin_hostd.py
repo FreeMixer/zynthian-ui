@@ -291,12 +291,21 @@ class fake_plugin_hostd:
     def verb_plan_clear(self, chain):
         return "resp 0" if self.plans.pop(int(chain), None) is not None else "resp -532"
 
+    # plugins whose pin carries verdict=refused: their add answers -516 until pin_accept takes them
+    REFUSED = set()
+
+    def verb_pin_accept(self, uri):
+        self.accepted = getattr(self, "accepted", set()) | {uri}
+        return "resp 0"
+
     def verb_add(self, uri, instance, *rest):
         n = int(instance)
         if n in self.instances:
             return "resp -2"
         if uri not in PLUGINS:
             return "resp -101"
+        if uri in self.REFUSED and uri not in getattr(self, "accepted", set()):
+            return "resp -516"
         self.instances[n] = uri
         self.params[n] = {s: p[4] for s, p in PLUGINS[uri]["params"].items()}
         return f"resp {n}"

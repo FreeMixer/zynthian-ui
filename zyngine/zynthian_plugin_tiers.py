@@ -3,14 +3,13 @@
 # ZYNTHIAN PROJECT: plugin tiers (zynthian_plugin_tiers)
 #
 # The rules that turn what qualification found about a plugin into its place in the plugin menus:
-# a tier word, a short tag after its name, and whether it is hidden.
+# a tier word, a short tag after its name, and whether it is below our bar.
 #
-#   pin / found                 RT-safe  worst latency  soak       tier        tag                       hidden
+#   pin / found                 RT-safe  worst latency  soak       tier        tag                       below bar
 #   no record                   -        -              -          unverified  not qualified             no
-#   verdict=refused             any      any            any        -           hidden · refused          yes
-#   verdict=refused, jalv row   any      any            any        refused     refused                   no
-#   crashed in qualification    any      any            any        -           hidden · crashed          yes
-#   hung in qualification       any      any            any        -           hidden · hung             yes
+#   verdict=refused             any      any            any        below       below bar · refused       yes
+#   crashed in qualification    any      any            any        below       below bar · crashed       yes
+#   hung in qualification       any      any            any        below       below bar · hung          yes
 #   measured                    yes      <= live ms     soaked     live        live · <figures>          no
 #   measured                    yes      <= live ms     unsoaked   live        live · <figures> · unsoaked  no
 #   measured                    yes      > live ms      any        studio      studio · <figures>        no
@@ -31,18 +30,25 @@
 #
 # live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
-# plugin between tiers. A refused plugin's jalv row (JV/) is listed, since jalv runs what plugin-hostd
-# refuses: after the qualified ones, tagged refused. Hidden ones are listed last, greyed, when
-# ZYNTHIAN_PLUGIN_SHOW_HIDDEN=1.
+# plugin between tiers.
+#
+# The bar is a recommendation, never a wall, and no plugin is handed to another host. ZYNTHIAN_PLUGIN_BAR (or the
+# list options) says what the menus do with a plugin below it: qualified-only lists only the plugins that passed
+# (no below-bar and no unqualified ones); warn-on-crashes, the default, lists every plugin, the ones below the bar
+# after the others with their mark, and asks before adding one whose qualification recorded a crash; load-all lists
+# them the same and asks nothing. A below-bar plugin that is added runs in plugin-hostd in a worker of its own. A
+# plugin-hostd pin judges plugin-hostd's rows only: a jalv row (JV/), there when the user chose jalv, is placed
+# without it. An entry the catalogue or a refused add marked NOT_WORKING (it does not load at all) is listed last,
+# greyed, with its word; the detail panel says why.
 #
 # A menu is ordered by tier (live, studio, the rest) or by one figure: name, cost, latency or RT safety,
 # by the value shown, a figure the record does not hold after the ones it does. In every order the rows
 # with figures come first, then the ones without (not qualified, entries that are not plugins), then the
-# refused jalv rows, then the hidden ones. hosted_only keeps the rows plugin-hostd runs (PH/).
+# ones below the bar, then the ones that do not work. hosted_only keeps the rows plugin-hostd runs (PH/).
 #
 # A plugin installed both as CLAP and as LV2 is one row, never two: formats are invisible to the user. A CLAP row and an
-# LV2 row of one name are one plugin, and the one placed worse gives way: shown before hidden, then by tier (live,
-# studio, not qualified, a refused jalv row), then CLAP before LV2 (omx-clap-host's own format), then plugin-hostd
+# LV2 row of one name are one plugin, and the one placed worse gives way: working before not working, then by tier
+# (live, studio, not qualified, below the bar), then CLAP before LV2 (omx-clap-host's own format), then plugin-hostd
 # before jalv. Rows of one format stay as they are: two plugins that share a name, and an LV2 plugin's jalv row beside
 # its plugin-hostd one, which is a choice of engine and not of format.
 #
@@ -58,12 +64,14 @@ import logging
 from collections import namedtuple
 
 LIVE_MAX_MS = 5.0
-RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "refused": 3, "hidden": 4}  # entries that are not plugins rank as unverified
+RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "below": 3, "not working": 4}  # entries that are not plugins rank as unverified
+BARS = ("qualified-only", "warn-on-crashes", "load-all")
+DEFAULT_BAR = "warn-on-crashes"
 SEP = " · "
 ORDERS = ("tier", "name", "cost", "latency", "rt")
 RT_WORDS = {True: "RT-ok", False: "RT-alone", None: "RT-?"}
 
-Placement = namedtuple("Placement", "tier tag hidden reason")
+Placement = namedtuple("Placement", "tier tag below reason")
 
 
 def live_max_ms():
@@ -74,8 +82,48 @@ def live_max_ms():
         return LIVE_MAX_MS
 
 
-def show_hidden():
-    return os.environ.get("ZYNTHIAN_PLUGIN_SHOW_HIDDEN", "").strip().lower() in ("1", "yes", "true", "on")
+def plugin_bar():
+    """ZYNTHIAN_PLUGIN_BAR, one of BARS; warn-on-crashes when unset or not one of them."""
+    bar = os.environ.get("ZYNTHIAN_PLUGIN_BAR", "").strip().lower() or DEFAULT_BAR
+    if bar not in BARS:
+        logging.warning(f"ZYNTHIAN_PLUGIN_BAR={bar} is not one of {', '.join(BARS)}: using {DEFAULT_BAR}")
+        bar = DEFAULT_BAR
+    return bar
+
+
+# What a qualification code says, in plain words, by its group
+CAUSES = (("hosting.stability.crash", "a crash"), ("hosting.stability.crashed", "a crash"),
+          ("hosting.stability.unsoaked", "the soak was not run"), ("hosting.rt-safety.", "an RT-safety fault"),
+          ("hosting.features.", "a feature it needs is not provided"), ("hosting.latency.", "its latency was not measured"),
+          ("hosting.pin.", "a pin mismatch"), ("probe.crashed", "a crash at probe"), ("probe.timeout", "the probe timed out"))
+WHAT = {"refused": "plugin-hostd's qualification refused it", "crashed": "it crashed during qualification",
+        "hung": "its qualification run did not finish"}
+
+
+def cause_text(code):
+    """A qualification code in plain words, the code itself after them; None for none."""
+    if not code:
+        return None
+    plain = next((text for prefix, text in CAUSES if code.startswith(prefix)), None)
+    return f"{plain} ({code})" if plain else code
+
+
+def below_bar_text(facts):
+    """Why a plugin is below our bar, in plain words, for the detail panel; None when it is not."""
+    reason = place(facts).reason
+    if not reason:
+        return None
+    cause = cause_text(facts.deciding) or ("a crash" if reason == "crashed" else "the probe timed out" if reason == "hung" else None)
+    return f"Below our bar: {WHAT[reason]}" + (f": {cause}" if cause else "") + \
+        ". You can still load it: plugin-hostd runs it in a worker of its own."
+
+
+def crash_question(name, facts, bar):
+    """The question asked before adding a plugin whose qualification recorded a crash, under warn-on-crashes;
+    None for every other plugin and bar: a below-bar reason that is no crash is information only."""
+    if bar != "warn-on-crashes" or not facts.crashed:
+        return None
+    return f"{name} crashed during qualification: {cause_text(facts.deciding) or 'a crash'}. Load it anyway?"
 
 
 def number_text(n):
@@ -97,7 +145,7 @@ def place(facts, live_ms=LIVE_MAX_MS):
     """The Placement of a plugin from its qualification Facts."""
     reason = "refused" if facts.pin == "refused" else "crashed" if facts.crashed else "hung" if facts.hung else None
     if reason:
-        return Placement(None, SEP.join(("hidden", reason)), True, reason)
+        return Placement("below", SEP.join(("below bar", reason)), True, reason)
     if not facts.record:
         return Placement("unverified", "not qualified", False, None)
     live = facts.rt_safe is True and facts.worst_latency_ms is not None and facts.worst_latency_ms <= live_ms
@@ -136,7 +184,7 @@ def format_rank(key):
 
 def one_row_per_plugin(rows):
     """rows as menu_entries builds them, (rank, n, key, text, greyed, figure, identity), with each plugin's rows
-    reduced to the best placed: shown before hidden, then by rank, then by format_rank, then in their own order. A row
+    reduced to the best placed: working before not working, then by rank, then by format_rank, then in their own order. A row
     gives way only to a better one of the same name in the other format."""
     order = lambda r: (r[4], r[0], format_rank(r[2]), r[1])
     by_name = {}
@@ -151,11 +199,11 @@ def one_row_per_plugin(rows):
     return [row for row in rows if id(row) not in dropped]
 
 
-def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, show=False, order="tier", hosted_only=False):
+def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, bar=DEFAULT_BAR, order="tier", hosted_only=False):
     """[(key, text, greyed)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
     first, then studio, then the rest in their own order; or by name or by a figure, the rows with
-    figures first, then the rest. Then the jalv rows of the plugins plugin-hostd refuses, tagged
-    refused; hidden ones dropped, or last and greyed when show is set. hosted_only keeps the PH rows.
+    figures first, then the rest. Then the plugins below the bar, with their mark (left out under qualified-only,
+    with the ones not qualified), then the entries that do not load at all, greyed. hosted_only keeps the PH rows.
     A plugin present in more than one format is one row, the best placed (one_row_per_plugin).
     facts_of(url) gives a plugin's Facts; entries that are not plugins keep their title."""
     rows = []
@@ -167,15 +215,17 @@ def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, show=False, order="tier
             rows.append((RANK[None], n, key, title, False, None, None))
             continue
         ident = plugin_identity(key, info)
+        if info.get("NOT_WORKING"):
+            rows.append((RANK["not working"], n, key, f"{title}  not working{SEP}{info['NOT_WORKING']}", True, None, ident))
+            continue
         facts = facts_of(info.get("URL", ""))
+        if not key.startswith("PH/"):
+            facts = facts._replace(pin=None)  # plugin-hostd's pin does not judge jalv
         p = place(facts, live_ms)
-        if p.reason == "refused" and key.startswith("JV/"):
-            rows.append((RANK["refused"], n, key, f"{title}  refused", False, None, ident))
+        if bar == "qualified-only" and (p.below or p.tier == "unverified"):
             continue
-        if p.hidden and not show:
-            continue
-        tier = "hidden" if p.hidden else p.tier
-        rows.append((RANK[tier], n, key, f"{title}  {p.tag}", p.hidden, figure(facts, order) if tier != "unverified" else None, ident))
+        rows.append((RANK[p.tier], n, key, f"{title}  {p.tag}", False,
+                     figure(facts, order) if p.tier not in ("unverified", "below") else None, ident))
     rows = one_row_per_plugin(rows)
     if order == "tier":
         rows.sort(key=lambda r: r[:2])

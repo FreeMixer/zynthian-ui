@@ -94,37 +94,63 @@ class engine_menu(unittest.TestCase):
         s.listbox, s.listbox2 = mock.MagicMock(), mock.MagicMock()
         s.lb2_fg = s.lb2_bg = "#c"
         s.cat_index, s.show_all, s.engine_info_dirty, s.index, s.context_index = 0, False, False, 0, {}
-        s.list_order, s.hosted_only = "tier", False
+        s.list_order, s.hosted_only, s.bar = "tier", False, "warn-on-crashes"
         s.update_list = lambda: None
         self.screen = s
 
-    def build(self, show="0"):
-        with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_SHOW_HIDDEN": show}), self.assertLogs(level=logging.WARNING):
+    def build(self, bar="warn-on-crashes"):
+        self.screen.bar = bar
+        with self.assertLogs(level=logging.WARNING):
             self.screen.qualification.stamp = None
             self.screen.get_engines_by_cat()
         self.screen.fill_list()
         return [row[2] for row in self.screen.filled]
 
-    def test_the_menu_is_tagged_and_ordered_and_hides_the_refused_and_crashed(self):
-        self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?"])
-        self.assertEqual(self.screen.engine_cats, ["Dynamics"], "a category of hidden plugins only is not listed")
+    def test_the_menu_is_tagged_and_ordered_and_lists_the_ones_below_the_bar_marked(self):
+        self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
+                                        "Refused Amp (PH)  below bar · refused"])
+        self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
         self.screen.listbox.itemconfig.assert_not_called()
 
-    def test_shown_the_hidden_ones_are_greyed(self):
-        self.assertEqual(self.build("1"), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
-                                           "Refused Amp (PH)  hidden · refused"])
-        self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#grey"})
-        self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
+    def test_qualified_only_lists_what_passed(self):
+        self.assertEqual(self.build("qualified-only"), ["Fast Comp (PH)  live 0fr RT-ok 40ns",
+                                                        "Linear EQ (PH)  studio 1024fr RT-ok cost?"])
+        self.assertEqual(self.screen.engine_cats, ["Dynamics"], "a category of below-bar plugins only is not listed")
 
-    def test_a_refused_plugins_jalv_row_is_listed_after_the_qualified_ones(self):
-        # The catalogue leaves the jalv row of a plugin plugin-hostd refuses in the menu: it is offered, tagged
+    def test_a_plugin_that_does_not_load_is_listed_greyed(self):
+        self.engines["PH/Refused"].update(NOT_WORKING="does not load", NOT_WORKING_WHY="why (LV2_ADAPTER_REFUSED)")
+        self.assertEqual(self.build()[-1], "Refused Amp (PH)  not working · does not load")
+        self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#grey"})
+
+    def test_a_crashed_plugin_asks_before_it_is_added_and_a_refused_one_does_not(self):
+        self.screen.chain_manager.engine_info = self.engines
+        self.screen.zyngui.modify_chain_status = {"type": "Audio Effect", "midi_thru": False}
+        with self.assertLogs(level=logging.WARNING):
+            self.screen.qualification.stamp = None
+            self.screen.qualification.refresh()
+        self.screen.list_data = [("PH/Crashed", 0, "", ""), ("PH/Refused", 1, "", "")]
+        self.screen.select_action(0)
+        text, callback, engine = self.screen.zyngui.show_confirm.call_args.args
+        self.assertEqual(text, "Crashy Delay crashed during qualification: a crash "
+                               "(hosting.stability.crashed-attributed-plugin). Load it anyway?")
+        self.screen.zyngui.modify_chain.assert_not_called()
+        callback(engine)
+        self.assertEqual(self.screen.zyngui.modify_chain_status["engine"], "PH/Crashed")
+        self.screen.zyngui.modify_chain.assert_called_once()
+        self.screen.zyngui.show_confirm.reset_mock()
+        self.screen.select_action(1)
+        self.screen.zyngui.show_confirm.assert_not_called()
+        self.assertEqual(self.screen.zyngui.modify_chain_status["engine"], "PH/Refused")
+        self.screen.bar = "load-all"
+        self.screen.select_action(0)
+        self.screen.zyngui.show_confirm.assert_not_called()
+
+    def test_a_jalv_row_the_user_lists_is_not_judged_by_plugin_hostds_pin(self):
         self.engines["JV/Refused"] = info("Refused Amp", "urn:q:refused", title="Refused Amp")
         self.by_cat["Dynamics"]["JV/Refused"] = self.engines["JV/Refused"]
-        self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
-                                        "Refused Amp  refused"])
-        self.screen.listbox.itemconfig.assert_not_called()
-        self.assertEqual(self.build("1")[2:], ["Refused Amp  refused", "Refused Amp (PH)  hidden · refused"])
-        self.screen.listbox.itemconfig.assert_called_once_with(3, {'fg': "#grey"})
+        rows = self.build()
+        self.assertEqual(rows[-1], "Refused Amp (PH)  below bar · refused")
+        self.assertFalse([r for r in rows if r.startswith("Refused Amp  ") and "below bar" in r], rows)
 
     def test_the_list_options_sort_and_filter_the_menu(self):
         self.engines["JV/Slow"] = info("Linear EQ", "urn:q:slow", title="Linear EQ")
@@ -134,19 +160,24 @@ class engine_menu(unittest.TestCase):
         title, options, cb = self.screen.zyngui.screens['option'].config.call_args.args
         self.assertEqual(title, "Plugin list")
         self.assertEqual(list(options), ["Sort by", "\u2612 Tier", "\u2610 Name", "\u2610 Cost", "\u2610 Latency",
-                                         "\u2610 RT safety", "Filter", "\u2610 plugin-hostd plugins only"])
+                                         "\u2610 RT safety", "Filter", "\u2610 plugin-hostd plugins only",
+                                         "Plugins below our bar", "\u2610 Qualified only", "\u2612 Warn on crashes",
+                                         "\u2610 Load all"])
+        cb("\u2610 Qualified only", options["\u2610 Qualified only"])
+        self.assertEqual(self.screen.bar, "qualified-only")
+        cb("\u2612 Warn on crashes", options["\u2612 Warn on crashes"])
         with self.assertLogs(level=logging.WARNING):
             self.screen.qualification.stamp = None
             cb("\u2610 Latency", options["\u2610 Latency"])
         self.screen.fill_list()
         self.assertEqual([row[2] for row in self.screen.filled],
-                         [FAST, "Linear EQ  studio 1024fr RT-ok cost?", SLOW])
+                         [FAST, "Linear EQ  studio 1024fr RT-ok cost?", SLOW, "Refused Amp (PH)  below bar · refused"])
         self.screen.show_menu()
         options = self.screen.zyngui.screens['option'].config.call_args.args[1]
         self.assertIn("\u2612 Latency", options)
         cb("\u2610 plugin-hostd plugins only", options["\u2610 plugin-hostd plugins only"])
         self.screen.fill_list()
-        self.assertEqual([row[2] for row in self.screen.filled], [FAST, SLOW])
+        self.assertEqual([row[2] for row in self.screen.filled], [FAST, SLOW, "Refused Amp (PH)  below bar · refused"])
         self.assertEqual((self.screen.list_order, self.screen.hosted_only, self.screen.index), ("latency", True, 0))
 
     def test_an_unreadable_qualification_leaves_the_plain_menu(self):
@@ -156,6 +187,30 @@ class engine_menu(unittest.TestCase):
             self.screen.get_engines_by_cat()
         self.screen.fill_list()
         self.assertEqual([row[2] for row in self.screen.filled], ["Linear EQ (PH)", "Fast Comp (PH)", "Refused Amp (PH)"])
+
+    def test_the_detail_panel_says_why_a_plugin_is_below_the_bar(self):
+        with self.assertLogs(level=logging.WARNING):
+            self.screen.qualification.refresh()
+        self.engines["PH/Refused"].update(DESCR="An amp", QUALITY=0, COMPLEX=0)
+        self.screen.engine_cats = []
+        self.screen.show_details("PH/Refused")
+        html = self.screen.zyngui.screens['help'].set_html.call_args.args[0]
+        self.assertIn('<div class="below_bar">Below our bar: plugin-hostd\'s qualification refused it: a feature it needs '
+                      'is not provided (hosting.features.required-not-provided)', html)
+
+    def test_the_info_panel_says_why_a_plugin_does_not_work(self):
+        amp = {"NAME": "Refused Amp", "TYPE": "Audio Effect", "CAT": "Dynamics", "QUALITY": 0, "COMPLEX": 0,
+               "DESCR": "An amp", "FORMAT_LINE": "LV2, run by plugin-hostd", "NOT_WORKING": "refused",
+               "NOT_WORKING_WHY": "it failed qualification, so plugin-hostd does not load it (PIN_REFUSED)"}
+        self.assertEqual(self.screen.description_text(amp), "An amp\n\nLV2, run by plugin-hostd\n\n"
+                         "Not working: it failed qualification, so plugin-hostd does not load it (PIN_REFUSED)")
+        self.assertEqual(self.screen.description_text({"DESCR": "x"}, "Below our bar: y"), "x\n\nBelow our bar: y")
+        self.screen.engine_cats = []
+        self.screen.get_info = lambda code=None: amp
+        self.screen.show_details("PH/Refused")
+        html = self.screen.zyngui.screens['help'].set_html.call_args.args[0]
+        self.assertIn('<div class="not_working">Not working: it failed qualification, so plugin-hostd does not load it '
+                      '(PIN_REFUSED)</div>', html)
 
     def test_the_info_panel_shows_the_format_line_after_the_description(self):
         surge = {"NAME": "Surge XT", "TYPE": "MIDI Synth", "CAT": "Synth", "QUALITY": 0, "COMPLEX": 0,

@@ -133,10 +133,30 @@ class refused_add(unittest.TestCase):
         self.man.add_processor(1, "PH/Piano", proc_id=1000)
         self.assertFalse(self.man.state_manager.is_busy(), self.man.state_manager.busy)
 
-    def test_the_refusal_says_what_the_protocol_says_the_code_means(self):
+    def test_the_refusal_says_the_daemons_word_and_what_it_means(self):
         self.man.add_processor(1, "PH/Piano", proc_id=1000)
-        self.assertEqual(self.man.add_refusal, "Piano: " + ph.protocol.meaning(REFUSED))
-        self.assertIn("SHA-256", self.man.add_refusal)
+        self.assertEqual(self.man.add_refusal, "Piano: a pinned file is missing or its SHA-256 differs, or the plugin's "
+                         "manifest names a file the pin does not hold (PIN_BINARY_MISMATCH)")
+
+    def test_a_refused_plugin_is_marked_not_working_and_adding_it_again_asks_no_engine(self):
+        self.man.add_processor(1, "PH/Piano", proc_id=1000)
+        refusal = self.man.add_refusal
+        info = self.man.engine_info["PH/Piano"]
+        self.assertEqual(info["NOT_WORKING"], "does not load")
+        self.assertEqual("Piano: " + info["NOT_WORKING_WHY"], refusal)
+        info["ENGINE"] = accepting_engine  # an engine that would take it: it is never asked
+        self.assertIsNone(self.man.add_processor(1, "PH/Piano", proc_id=1001))
+        self.assertEqual(self.man.add_refusal, refusal, "the same reason")
+        self.assertEqual(self.chain.get_processors(), [])
+        self.assertEqual(self.man.zyngines, {})
+        self.assertFalse(self.man.state_manager.is_busy(), self.man.state_manager.busy)
+
+    def test_an_entry_the_catalogue_marks_not_working_is_not_added_and_says_why(self):
+        self.man.engine_info["PH/Ok"].update(NOT_WORKING="not installed",
+                                             NOT_WORKING_WHY="plugin-hostd is not installed, so it cannot run this plugin")
+        self.assertIsNone(self.man.add_processor(1, "PH/Ok", proc_id=1001))
+        self.assertEqual(self.man.add_refusal, "Ok: plugin-hostd is not installed, so it cannot run this plugin")
+        self.assertEqual(self.chain.get_processors(), [])
 
     def test_an_accepted_add_has_no_refusal(self):
         self.man.add_processor(1, "PH/Piano", proc_id=1000)
@@ -151,7 +171,7 @@ class refused_add(unittest.TestCase):
         self.assertEqual([p.id for p in self.chain.get_processors()], [1001])
         messages = [c.kwargs.get("message") for c in send.call_args_list if c.kwargs.get("message")]
         self.assertEqual(len(messages), 1, send.call_args_list)
-        self.assertIn("Piano: " + ph.protocol.meaning(REFUSED), messages[0])
+        self.assertIn("Piano: a pinned file is missing or its SHA-256 differs", messages[0])
 
 
 if __name__ == "__main__":

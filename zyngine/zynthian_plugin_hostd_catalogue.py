@@ -118,13 +118,18 @@ def jalv_twin(key):
     return None if key.startswith("PH/clap:") or not key.startswith("PH/") else "JV/" + key[3:]
 
 
-def refused_plugins():
-    """The uris plugin-hostd's pins refuse: the daemon turns their add away, jalv still runs them."""
-    try:
-        from zyngine import zynthian_plugin_qualification as qualification
-    except ImportError:
-        return set()
-    return {uri for uri, verdict in qualification.read_pins(qualification.pin_paths()).items() if verdict == "refused"}
+NOT_INSTALLED_WHY = "plugin-hostd is not installed, so it cannot run this plugin"
+
+
+def short_meaning(meaning):
+    """The first clause of a protocol meaning: what the code says, without how the daemon goes on."""
+    return (meaning or "").split(": ")[0].strip()
+
+
+def refusal_text(word, meaning=None):
+    """Why plugin-hostd did not load a plugin: what the code means, then the daemon's word for it (PHD_ERR_ left out)."""
+    word = (word or "").removeprefix("PHD_ERR_")
+    return f"{short_meaning(meaning) or 'plugin-hostd refused it'} ({word})"
 
 
 def plugin_name(info):
@@ -147,17 +152,15 @@ def add_format_lines(added):
         info["FORMAT_LINE"] = line
 
 
-def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
+def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     """Add a PH entry for each LV2 instrument and effect in engines and each CLAP one omx-clap-scan
-    finds, to engines and to zynthian_lv2's lists by type. They are enabled when plugin-hostd is
-    installed; an LV2 one only when its jalv entry is enabled too.
+    finds, to engines and to zynthian_lv2's lists by type. An LV2 one is enabled when its jalv entry is.
     With plugin-hostd as the plugin engine, the menus list the PH entry and not its jalv one; the jalv
-    entry stays in engines, so a chain that still holds it loads as it was saved. A plugin plugin-hostd
-    refuses (refused: its uris, by default the ones its pins refuse) keeps its jalv entry in the menu
-    and its PH entry out of it."""
+    entry stays in engines, so a chain that still holds it loads as it was saved. Every plugin is listed,
+    whatever its qualification found (the menus mark the ones below the bar): no plugin is moved to jalv, which
+    the user chooses with ZYNTHIAN_PLUGIN_ENGINE. When plugin-hostd is not installed, every PH entry is marked
+    NOT_WORKING, with why in NOT_WORKING_WHY, so the menu says so."""
     available = shutil.which(binary) is not None
-    if refused is None:
-        refused = refused_plugins()
     try:
         from zyngine import zynthian_lv2
         by_type = zynthian_lv2.engines_by_type or {}
@@ -169,9 +172,9 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
     added = {}
     for key, info in list(engines.items()):
         if key.startswith("JV/") and info.get("TYPE") in ENGINE_TYPES:
-            entry = {k: v for k, v in info.items() if k != "ENGINE"}
+            entry = {k: v for k, v in info.items() if k not in ("ENGINE", "NOT_WORKING", "NOT_WORKING_WHY")}
             entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (PH)", "FORMAT": "LV2",
-                          "ENABLED": bool(info.get("ENABLED")) and available})
+                          "ENABLED": bool(info.get("ENABLED"))})
             added["PH/" + key[3:]] = entry
     first_dir = {}  # CLAP id => the directory it was first found in, in search order
     for plugin in (scan_clap() if clap is None else clap):
@@ -186,21 +189,23 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd", refused=None):
         clap_plugins[key] = plugin
         added[key] = {"ID": "phc" + url, "NAME": plugin["name"], "TITLE": f"{plugin['name']} (PH)",
                       "FORMAT": "CLAP", "TYPE": etype, "CAT": next((CLAP_CATS[f] for f in plugin["features"] if f in CLAP_CATS), "Other"),
-                      "ENABLED": available, "INDEX": 9999, "URL": url, "UI": "",
+                      "ENABLED": True, "INDEX": 9999, "URL": url, "UI": "",
                       "DESCR": f"Plugin by {plugin['vendor']}",
                       "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
     add_format_lines(added)
+    if not available:
+        for info in added.values():
+            info.update(NOT_WORKING="not installed", NOT_WORKING_WHY=NOT_INSTALLED_WHY)
     engines.update(added)
     by_ph = plugin_engine() == "plugin-hostd"
     if by_ph and not available:
-        logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: the menus offer jalv")
+        logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: "
+                        "the menus list its plugins as not working until it is")
     for key, info in added.items():
         if info["TYPE"] in by_type:
-            twin = jalv_twin(key)
-            if by_ph and available and twin and info.get("URL") in refused:
-                continue  # jalv runs what plugin-hostd refuses: its row stays, the PH one stays out
             by_type[info["TYPE"]][key] = info
-            if by_ph and available and twin:
+            twin = jalv_twin(key)
+            if by_ph and twin:
                 by_type[info["TYPE"]].pop(twin, None)
     return added
 

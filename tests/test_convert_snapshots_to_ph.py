@@ -44,19 +44,37 @@ class converter_case(unittest.TestCase):
         shutil.copytree(FIXTURES, self.dir)
         self.config = os.path.join(self.dir, "engine_config.json")
 
-    def run_tool(self, *paths, pins=""):
+    def run_tool(self, *paths, pins="", qualification=None):
         out = io.StringIO()
-        code = conv.main(["--engine-config", self.config, "--pins", pins, *paths], out=out)
+        qualification = qualification or os.path.join(self.dir, "no-qualification")
+        code = conv.main(["--engine-config", self.config, "--pins", pins, "--qualification", qualification, *paths],
+                         out=out)
         return code, out.getvalue()
 
-    def test_a_plugin_plugin_hostd_refuses_stays_with_jalv(self):
+    def test_a_plugin_plugin_hostd_refuses_is_converted_and_reported_with_why(self):
         pins = os.path.join(self.dir, "pins")
         code, report = self.run_tool(self.dir, pins=pins)
-        self.assertFalse(os.path.exists(os.path.join(self.dir, "one-jv-one-zy.ph.zss")))
-        self.assertIn("left       processor 2: JV/ZamComp: plugin-hostd refuses urn:zamaudio:ZamComp (pin verdict=refused)",
-                      report)
+        new = load(os.path.join(self.dir, "one-jv-one-zy.ph.zss"))
+        self.assertEqual(new["chains"]["1"]["slots"], [{"1": "ZY"}, {"2": "PH/ZamComp"}], "nothing is left on jalv")
+        self.assertIn("converted  processor 2 JV/ZamComp -> PH/ZamComp (urn:zamaudio:ZamComp)\n"
+                      "  below bar  processor 2 PH/ZamComp: Below our bar: plugin-hostd's qualification refused it. "
+                      "You can still load it: plugin-hostd runs it in a worker of its own.", report)
+        self.assertIn("3 snapshots read, 2 written; 2 processors converted, 4 left as they are; "
+                      "1 converted processor below our bar (listed above)", report)
         # verdict=isolated is hosted, in a worker of its own
         self.assertIn("converted  processor 4 JV/Surge XT -> PH/Surge XT", report)
+
+    def test_the_reason_names_what_the_qualification_record_decided(self):
+        records = os.path.join(self.dir, "records")
+        os.makedirs(records)
+        with open(os.path.join(records, "run.json"), "w") as f:
+            json.dump({"format": "lv2-plugin-measurements", "formatVersion": "1.0", "run": {"measuredAt": "2026-11-01"},
+                       "plugins": [{"uri": "urn:zamaudio:ZamComp"}],
+                       "verdicts": [{"uri": "urn:zamaudio:ZamComp", "rating": "unsuitable",
+                                     "deciding": "hosting.features.required-not-provided"}]}, f)
+        code, report = self.run_tool(os.path.join(self.dir, "one-jv-one-zy.zss"), pins=os.path.join(self.dir, "pins"),
+                                     qualification=records)
+        self.assertIn("refused it: a feature it needs is not provided (hosting.features.required-not-provided)", report)
 
     def test_the_jalv_plugin_becomes_a_ph_one_and_the_rest_stays(self):
         src = os.path.join(self.dir, "one-jv-one-zy.zss")
@@ -155,10 +173,10 @@ class converted_snapshot_loads(phtest.plugin_hostd_case):
         code = snapshot["chains"]["1"]["slots"][1]["2"]
         state = snapshot["zs3"]["zs3-0"]["processors"]["2"]
 
-        phtest.cat.add_catalogue(self.info, clap=[])  # no PH/ZamComp without its jalv entry
+        phtest.cat.add_catalogue(self.info, clap=[], binary=phtest.FAKE)  # no PH/ZamComp without its jalv entry
         self.assertNotIn(code, self.info)
         self.info["JV/ZamComp"] = phtest.lv2_info("ZamComp", "urn:zamaudio:ZamComp")
-        phtest.cat.add_catalogue(self.info, clap=[])
+        phtest.cat.add_catalogue(self.info, clap=[], binary=phtest.FAKE)
 
         fake = self.serve()
         proc = self.add(self.chain(), code)
