@@ -42,15 +42,15 @@ def measured(latency=None, worst="same", rt=None, soaked=None, pin=None, crashed
                  frames, declared, cost)
 
 
-# (case, facts, live ms, tier, tag, hidden)
+# (case, facts, live ms, tier, tag, below the bar)
 RULES = [
     ("no record", NO_FACTS, 5, "unverified", "not qualified", False),
     ("a pin and no record", NO_FACTS._replace(pin="in-process"), 5, "unverified", "not qualified", False),
-    ("refused", measured(0.0, rt=True, soaked=True, pin="refused"), 5, None, "hidden · refused", True),
-    ("refused with no record", NO_FACTS._replace(pin="refused"), 5, None, "hidden · refused", True),
-    ("crashed", measured(0.0, rt=True, crashed=True), 5, None, "hidden · crashed", True),
-    ("hung", measured(None, rt=None, hung=True), 5, None, "hidden · hung", True),
-    ("refused and crashed", measured(0.0, pin="refused", crashed=True), 5, None, "hidden · refused", True),
+    ("refused", measured(0.0, rt=True, soaked=True, pin="refused"), 5, "below", "below bar · refused", True),
+    ("refused with no record", NO_FACTS._replace(pin="refused"), 5, "below", "below bar · refused", True),
+    ("crashed", measured(0.0, rt=True, crashed=True), 5, "below", "below bar · crashed", True),
+    ("hung", measured(None, rt=None, hung=True), 5, "below", "below bar · hung", True),
+    ("refused and crashed", measured(0.0, pin="refused", crashed=True), 5, "below", "below bar · refused", True),
     ("isolated pin, fast", measured(1.2, rt=True, soaked=True, pin="isolated", frames=58, cost=19.4238), 5, "live",
      "live 58fr RT-ok 19.4ns", False),
     ("suitable fast", measured(1.2, rt=True, soaked=True, frames=58, declared=64, cost=120.6), 5, "live",
@@ -79,10 +79,10 @@ RULES = [
 class rule_table(unittest.TestCase):
 
     def test_every_row(self):
-        for case, facts, live_ms, tier, tag, hidden in RULES:
+        for case, facts, live_ms, tier, tag, below in RULES:
             with self.subTest(case):
                 p = tiers.place(facts, live_ms)
-                self.assertEqual((p.tier, p.tag, p.hidden), (tier, tag, hidden))
+                self.assertEqual((p.tier, p.tag, p.below), (tier, tag, below))
 
     def test_the_table_has_no_two_rows_alike(self):
         self.assertEqual(len({(f, ms) for _, f, ms, *_ in RULES}), len(RULES))
@@ -98,10 +98,12 @@ class settings(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_LIVE_MS": "fast"}), self.assertLogs(level=logging.WARNING):
             self.assertEqual(tiers.live_max_ms(), 5.0)
 
-    def test_show_hidden(self):
-        for value, shown in (("1", True), ("yes", True), ("0", False), ("", False)):
-            with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_SHOW_HIDDEN": value}):
-                self.assertIs(tiers.show_hidden(), shown, value)
+    def test_the_bar(self):
+        for value, bar in (("qualified-only", "qualified-only"), (" Load-All ", "load-all"), ("", "warn-on-crashes")):
+            with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_BAR": value}):
+                self.assertEqual(tiers.plugin_bar(), bar, value)
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_BAR": "never"}), self.assertLogs(level=logging.WARNING):
+            self.assertEqual(tiers.plugin_bar(), "warn-on-crashes")
 
     def test_paths(self):
         with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_DIR": "", "OMX_QUALIFICATION_DIR": "",
@@ -159,13 +161,13 @@ FIXTURE_TAGS = {
     "urn:q:fast": ("live 0fr RT-ok cost?", "live lat? RT-ok cost?"),
     "urn:q:slow": ("studio 1024fr RT-ok cost?", "studio lat? RT-ok cost?"),
     "urn:q:alloc": ("studio 0fr RT-alone cost?", "studio lat? RT-alone cost?"),
-    "urn:q:refused": ("hidden · refused", "hidden · refused"),
-    "urn:q:crashed": ("hidden · crashed", "hidden · crashed"),
-    "urn:q:hung": ("hidden · hung", "hidden · hung"),
+    "urn:q:refused": ("below bar · refused", "below bar · refused"),
+    "urn:q:crashed": ("below bar · crashed", "below bar · crashed"),
+    "urn:q:hung": ("below bar · hung", "below bar · hung"),
     "urn:q:unsoaked": ("live 64fr RT-ok cost? unsoaked",
                        "live lat? RT-ok cost? unsoaked"),
     "urn:q:none": ("not qualified", "not qualified"),
-    "clap:/usr/lib/clap/test.clap#org.test.synth": ("hidden · refused", "hidden · refused"),
+    "clap:/usr/lib/clap/test.clap#org.test.synth": ("below bar · refused", "below bar · refused"),
 }
 
 
@@ -223,7 +225,7 @@ class fixture_records(unittest.TestCase):
         os.utime(pins, ns=(time.time_ns() + 10**9,) * 2)
         with self.assertLogs(level=logging.WARNING):
             q.refresh()
-        self.assertTrue(tiers.place(q.facts("urn:q:fast", 48000)).hidden)
+        self.assertTrue(tiers.place(q.facts("urn:q:fast", 48000)).below)
 
 
 CLAP_EQ = "clap:/usr/lib/clap/3BandEQ.clap#studio.kx.distrho.MVerb"
@@ -285,16 +287,16 @@ class pi5_records(unittest.TestCase):
         facts = self.q.facts(CLAP_EQ, 48000)      # 512 locks in the run
         self.assertEqual((facts.rt_safe, facts.deciding), (False, "hosting.rt-safety.violations-in-run"))
 
-    def test_a_refused_pin_still_hides_a_record_that_has_figures(self):
+    def test_a_refused_pin_puts_a_record_that_has_figures_below_the_bar(self):
         for uri in (CLAP_EQ, CLAP_SPLIT):
             with self.subTest(uri=uri):
                 p = tiers.place(self.q.facts(uri, 48000))
-                self.assertEqual((p.tag, p.hidden, p.reason), ("hidden · refused", True, "refused"))
+                self.assertEqual((p.tag, p.below, p.reason), ("below bar · refused", True, "refused"))
 
     def test_a_probe_that_timed_out_is_hung(self):
         facts = self.q.facts(LV2_TIMEOUT, 48000)
         self.assertEqual((facts.record, facts.hung, facts.latency_ms, facts.rt_safe), (True, True, None, None))
-        self.assertEqual(tiers.place(facts).tag, "hidden · hung")
+        self.assertEqual(tiers.place(facts).tag, "below bar · hung")
 
     def test_no_record_is_unverified(self):
         self.assertEqual(tiers.place(self.q.facts("clap:/usr/lib/clap/none.clap#x", 48000)).tag, "not qualified")
@@ -304,24 +306,35 @@ class pi5_records(unittest.TestCase):
                    ((CLAP_EQ, "3 Band EQ (PH)"), (CLAP_SPLIT, "3 Band Splitter (PH)"), (CLAP_DELAY, "Art Delay (PH)"),
                     (LV2_DELAY, "Art Delay LV2 (PH)"), ("clap:/usr/lib/clap/none.clap#x", "None (PH)"))}
         rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000))
-        self.assertEqual([text for _, text, _ in rows],
-                         ["Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked",
-                          "Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked",
-                          "None (PH)  not qualified"])
-        shown = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), show=True)
-        self.assertEqual([(text, grey) for _, text, grey in shown][-2:],
-                         [("3 Band EQ (PH)  hidden · refused", True), ("3 Band Splitter (PH)  hidden · refused", True)])
+        self.assertEqual([(text, grey) for _, text, grey in rows],
+                         [("Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked", False),
+                          ("Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked", False),
+                          ("None (PH)  not qualified", False),
+                          ("3 Band EQ (PH)  below bar · refused", False),
+                          ("3 Band Splitter (PH)  below bar · refused", False)])
+        qualified = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), bar="qualified-only")
+        self.assertEqual([text for _, text, _ in qualified], ["Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked",
+                                                             "Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked"])
 
-    def test_a_refused_plugins_jalv_row_is_listed_after_the_qualified_ones(self):
+    def test_a_refused_plugin_is_listed_marked_and_last_never_handed_to_its_jalv_row(self):
         engines = {"JV/Refused": {"TITLE": "Refused", "URL": "urn:r"}, "PH/Refused": {"TITLE": "Refused (PH)", "URL": "urn:r"},
                    "ZY": {"TITLE": "ZynAddSubFX"}, "PH/Fast": {"TITLE": "Fast (PH)", "URL": "urn:f"}}
         facts = {"urn:r": NO_FACTS._replace(pin="refused"), "urn:f": measured(1.0, rt=True, soaked=True, frames=48)}
         rows = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS))
+        # the jalv row is there only when the user lists jalv: plugin-hostd's pin does not judge it
         self.assertEqual([(text, grey) for _, text, grey in rows],
-                         [("Fast (PH)  live 48fr RT-ok cost?", False), ("ZynAddSubFX", False),
-                          ("Refused  refused", False)])
-        shown = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), show=True)
-        self.assertEqual([text for _, text, _ in shown][-2:], ["Refused  refused", "Refused (PH)  hidden · refused"])
+                         [("Fast (PH)  live 48fr RT-ok cost?", False), ("Refused  not qualified", False),
+                          ("ZynAddSubFX", False), ("Refused (PH)  below bar · refused", False)])
+        self.assertEqual(tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), bar="load-all"), rows)
+
+    def test_an_entry_the_catalogue_marks_not_working_is_listed_greyed_with_its_word(self):
+        engines = {"PH/A": {"TITLE": "A (PH)", "URL": "urn:a", "NOT_WORKING": "not installed"},
+                   "PH/F": {"TITLE": "F (PH)", "URL": "urn:f"}}
+        facts = {"urn:a": measured(1.0, rt=True, soaked=True, frames=48),
+                 "urn:f": measured(1.0, rt=True, soaked=True, frames=48)}
+        rows = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), hosted_only=True)
+        self.assertEqual([(text, grey) for _, text, grey in rows],
+                         [("F (PH)  live 48fr RT-ok cost?", False), ("A (PH)  not working · not installed", True)])
 
 
 class one_row_per_plugin(unittest.TestCase):
@@ -332,8 +345,8 @@ class one_row_per_plugin(unittest.TestCase):
     SURGE_LV2 = "https://surge-synthesizer.github.io/lv2/surge-xt"
     SURGE_CLAP = "clap:/usr/local/lib/clap/Surge XT.clap#org.surge-synth-team.surge-xt"
 
-    def rows(self, engines, facts, show=False):
-        return tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), show=show)
+    def rows(self, engines, facts):
+        return tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS))
 
     def test_a_plugin_in_both_formats_placed_alike_is_one_row_the_clap_one(self):
         engines = {"PH/" + self.KARS_LV2: {"NAME": "Kars", "TITLE": "Kars (PH)", "URL": self.KARS_LV2},
@@ -350,13 +363,13 @@ class one_row_per_plugin(unittest.TestCase):
                          ["Surge XT (PH)  studio 34/0fr RT-alone cost?"], "the LV2 row, not qualified, gives way")
         self.assertEqual([key for key, _, _ in self.rows(engines, {self.SURGE_LV2: studio})], ["PH/" + self.SURGE_LV2])
 
-    def test_a_refused_jalv_row_gives_way_to_the_other_format_and_a_hidden_row_to_a_shown_one(self):
+    def test_a_jalv_row_plugin_hostd_refuses_is_not_judged_by_that_pin_and_gives_way_to_a_better_row(self):
         engines = {"JV/Obxd": {"NAME": "Obxd", "TITLE": "Obxd", "URL": "https://obxd.wordpress.com"},
                    "PH/clap:/usr/lib/clap/OB-Xd.clap#obxd": {"NAME": "OBXD", "TITLE": "OBXD (PH)",
                                                               "URL": "clap:/usr/lib/clap/OB-Xd.clap#obxd"}}
         facts = {"https://obxd.wordpress.com": NO_FACTS._replace(pin="refused"),
                  "clap:/usr/lib/clap/OB-Xd.clap#obxd": measured(0.7, rt=False, soaked=True, frames=34, pin="isolated")}
-        self.assertEqual([key for key, _, _ in self.rows(engines, facts, show=True)], ["PH/clap:/usr/lib/clap/OB-Xd.clap#obxd"])
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts)], ["PH/clap:/usr/lib/clap/OB-Xd.clap#obxd"])
 
     def test_an_lv2_plugins_jalv_row_beside_its_plugin_hostd_row_is_a_choice_of_engine_and_stays(self):
         engines = {"PH/urn:a": {"NAME": "Amp", "TITLE": "Amp (PH)", "URL": "urn:a"},
@@ -452,11 +465,11 @@ class menu_order(unittest.TestCase):
         with self.assertLogs(level=logging.WARNING):
             self.q = qual.qualification(RECORDS, [PINS]).refresh()
 
-    def entries(self, show):
-        return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, 48000), 5.0, show)
+    def entries(self, bar):
+        return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, 48000), 5.0, bar)
 
-    def test_live_first_then_studio_then_the_rest_and_no_hidden_ones(self):
-        self.assertEqual(self.entries(False), [
+    def test_live_first_then_studio_then_the_rest_then_the_ones_below_the_bar_marked(self):
+        self.assertEqual(self.entries("warn-on-crashes"), [
             ("PH/Fast", "Fast Comp (PH)  live 0fr RT-ok cost?", False),
             ("PH/Unsoaked", "New Gate (PH)  live 64fr RT-ok cost? unsoaked", False),
             ("JV/Fast", "Fast Comp  live 0fr RT-ok cost?", False),
@@ -464,20 +477,35 @@ class menu_order(unittest.TestCase):
             ("PH/Alloc", "Alloc Verb (PH)  studio 0fr RT-alone cost?", False),
             ("PH/None", "Untested Chorus (PH)  not qualified", False),
             ("AP", "Audio Player", False),
+            ("PH/Crashed", "Crashy Delay (PH)  below bar · crashed", False),
+            ("PH/Refused", "Refused Amp (PH)  below bar · refused", False),
+            ("PH/Hung", "Stuck Pitch (PH)  below bar · hung", False),
         ])
+        self.assertEqual(self.entries("load-all"), self.entries("warn-on-crashes"))
 
-    def test_shown_the_hidden_ones_come_last_greyed_with_their_reason(self):
-        entries = self.entries(True)
-        self.assertEqual([key for key, _, _ in entries[:7]], [key for key, _, _ in self.entries(False)])
-        self.assertEqual(entries[7:], [
-            ("PH/Crashed", "Crashy Delay (PH)  hidden · crashed", True),
-            ("PH/Refused", "Refused Amp (PH)  hidden · refused", True),
-            ("PH/Hung", "Stuck Pitch (PH)  hidden · hung", True),
-        ])
+    def test_qualified_only_lists_only_what_passed(self):
+        self.assertEqual([key for key, _, _ in self.entries("qualified-only")],
+                         ["PH/Fast", "PH/Unsoaked", "JV/Fast", "PH/Slow", "PH/Alloc", "AP"])
+
+    def test_only_a_recorded_crash_asks_before_adding_and_only_under_warn_on_crashes(self):
+        crashed, refused = self.q.facts("urn:q:crashed", 48000), self.q.facts("urn:q:refused", 48000)
+        self.assertEqual(tiers.crash_question("Crashy Delay", crashed, "warn-on-crashes"),
+                         "Crashy Delay crashed during qualification: a crash "
+                         "(hosting.stability.crashed-attributed-plugin). Load it anyway?")
+        self.assertIsNone(tiers.crash_question("Crashy Delay", crashed, "load-all"))
+        self.assertIsNone(tiers.crash_question("Refused Amp", refused, "warn-on-crashes"), "information only")
+        self.assertIsNone(tiers.crash_question("Fast", self.q.facts("urn:q:fast", 48000), "warn-on-crashes"))
+
+    def test_the_detail_says_why_a_plugin_is_below_the_bar_in_plain_words(self):
+        self.assertEqual(tiers.below_bar_text(self.q.facts("urn:q:refused", 48000)),
+                         "Below our bar: plugin-hostd's qualification refused it: a feature it needs is not provided "
+                         "(hosting.features.required-not-provided). You can still load it: plugin-hostd runs it in a "
+                         "worker of its own.")
+        self.assertIsNone(tiers.below_bar_text(self.q.facts("urn:q:fast", 48000)))
 
     def test_without_any_record_the_order_is_the_engine_configs(self):
         q = qual.qualification(os.path.join(RECORDS, "absent"), []).refresh()
-        entries = tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000), 5.0, False)
+        entries = tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000), 5.0)
         self.assertEqual([key for key, _, _ in entries], list(CATALOGUE))
 
 

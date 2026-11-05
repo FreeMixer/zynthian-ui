@@ -6,9 +6,11 @@
 # Run once by hand: rewrites the jalv (JV) processors of saved snapshots into plugin-hostd (PH)
 # processors of the same plugin, with the same controller values and preset. Each result is written
 # beside its snapshot, foo.zss as foo.ph.zss, and nothing is ever overwritten. Zynthian itself never
-# converts a snapshot when it loads one.
+# converts a snapshot when it loads one. Every instrument and effect is converted, whatever its
+# qualification found: the ones below our bar (pin refused, a crash or a hang in qualification) are
+# reported with why, and plugin-hostd runs them in a worker of their own. None is left on jalv.
 #
-#   convert_snapshots_to_ph.py [--engine-config FILE] [--pins PATHS] [--suffix .ph] SNAPSHOT_OR_DIR...
+#   convert_snapshots_to_ph.py [--engine-config FILE] [--pins PATHS] [--qualification DIR] [--suffix .ph] SNAPSHOT_OR_DIR...
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 #
@@ -38,14 +40,15 @@ def load_module(name):
 
 catalogue = load_module("zynthian_plugin_hostd_catalogue")
 qualification = load_module("zynthian_plugin_qualification")
+tiers = load_module("zynthian_plugin_tiers")
 
 
 def default_engine_config():
     return os.path.join(os.environ.get("ZYNTHIAN_CONFIG_DIR") or "/zynthian/config", "engine_config.json")
 
 
-def why_not(eng_code, engines, pins=None):
-    """None when plugin-hostd can host the processor's plugin, else the reason it stays."""
+def why_not(eng_code, engines):
+    """None when plugin-hostd hosts the processor's plugin, else the reason it stays."""
     if not eng_code.startswith("JV/"):
         return f"{eng_code} is not a jalv plugin"
     info = engines.get(eng_code)
@@ -53,8 +56,6 @@ def why_not(eng_code, engines, pins=None):
         return f"{eng_code} is not in the engine config, so its plugin URL is unknown"
     if info.get("TYPE") not in catalogue.ENGINE_TYPES:
         return f"{eng_code} is a {info.get('TYPE')}: plugin-hostd hosts instruments and effects"
-    if (pins or {}).get(info["URL"]) == "refused":
-        return f"{eng_code}: plugin-hostd refuses {info['URL']} (pin verdict=refused)"
     return None
 
 
@@ -72,23 +73,25 @@ def ph_processor_state(state):
     return state
 
 
-def convert_state(snapshot, engines, pins=None):
-    """(converted snapshot, report rows). A row is (processor id, engine code, new code or None, reason)."""
+def convert_state(snapshot, engines, facts=None):
+    """(converted snapshot, report rows). A row is (processor id, engine code, new code or None, reason, why the
+    plugin is below our bar or None). facts(url): its qualification Facts."""
     rows = []
     if snapshot.get("schema_version") != SCHEMA_VERSION:
         return None, [(None, None, None, f"schema {snapshot.get('schema_version')} is not {SCHEMA_VERSION}: "
-                                         "load and save it once in Zynthian, then convert")]
+                                         "load and save it once in Zynthian, then convert", None)]
     snapshot = json.loads(json.dumps(snapshot))
     moved = {}
     for chain_id, chain in snapshot.get("chains", {}).items():
         for slot in chain.get("slots", []):
             for proc_id, eng_code in slot.items():
-                reason = why_not(eng_code, engines, pins)
+                reason = why_not(eng_code, engines)
                 if reason:
-                    rows.append((proc_id, eng_code, None, reason))
+                    rows.append((proc_id, eng_code, None, reason, None))
                     continue
                 slot[proc_id] = moved[proc_id] = "PH/" + eng_code[3:]
-                rows.append((proc_id, eng_code, slot[proc_id], engines[eng_code]["URL"]))
+                url = engines[eng_code]["URL"]
+                rows.append((proc_id, eng_code, slot[proc_id], url, tiers.below_bar_text(facts(url)) if facts else None))
     for zs3 in snapshot.get("zs3", {}).values():
         processors = zs3.get("processors", {})
         for proc_id in moved:
@@ -114,16 +117,16 @@ def snapshot_files(paths, suffix):
             yield path
 
 
-def convert_file(path, engines, suffix, out, pins=None):
-    """Convert one snapshot. Returns (converted, left, written)."""
+def convert_file(path, engines, suffix, out, facts=None):
+    """Convert one snapshot. Returns (converted, left, written, below): below, the converted ones below our bar."""
     target = target_path(path, suffix)
     try:
         with open(path) as f:
             snapshot = json.load(f)
     except (OSError, ValueError) as e:
         print(f"{path}: not read ({e})", file=out)
-        return 0, 0, False
-    converted, rows = convert_state(snapshot, engines, pins)
+        return 0, 0, False, 0
+    converted, rows = convert_state(snapshot, engines, facts)
     if converted is None:
         print(f"{path}: left as it is", file=out)
     elif os.path.exists(target):
@@ -131,11 +134,13 @@ def convert_file(path, engines, suffix, out, pins=None):
         converted = None
     else:
         print(f"{path} -> {target}", file=out)
-    for proc_id, eng_code, new_code, reason in rows:
+    for proc_id, eng_code, new_code, reason, below in rows:
         if proc_id is None:
             print(f"  left       {reason}", file=out)
         elif new_code and converted is not None:
             print(f"  converted  processor {proc_id} {eng_code} -> {new_code} ({reason})", file=out)
+            if below:
+                print(f"  below bar  processor {proc_id} {new_code}: {below}", file=out)
         elif new_code:
             print(f"  left       processor {proc_id} {eng_code}: would become {new_code}", file=out)
         else:
@@ -143,15 +148,15 @@ def convert_file(path, engines, suffix, out, pins=None):
     n_converted = sum(1 for r in rows if r[2]) if converted is not None else 0
     n_left = sum(1 for r in rows if r[0] is not None) - n_converted
     if converted is None:
-        return n_converted, n_left, False
+        return n_converted, n_left, False, 0
     try:
         # "x" mode: a file that appeared since the check is not overwritten either
         with open(target, "x") as f:
             json.dump(converted, f)
     except OSError as e:
         print(f"  not written: {e}", file=out)
-        return 0, n_left + n_converted, False
-    return n_converted, n_left, True
+        return 0, n_left + n_converted, False, 0
+    return n_converted, n_left, True, sum(1 for r in rows if r[2] and r[4])
 
 
 def main(argv=None, out=sys.stdout):
@@ -160,8 +165,10 @@ def main(argv=None, out=sys.stdout):
     parser.add_argument("--engine-config", default=default_engine_config(),
                         help="Zynthian's engine config, for each jalv plugin's URL and type (default: %(default)s)")
     parser.add_argument("--pins", default=":".join(qualification.pin_paths()),
-                        help="pin files or directories, ':' between them; a plugin pinned verdict=refused stays "
-                             "with jalv (default: %(default)s)")
+                        help="pin files or directories, ':' between them; a plugin pinned verdict=refused is "
+                             "converted and reported below our bar (default: %(default)s)")
+    parser.add_argument("--qualification", default=qualification.qualification_dir(),
+                        help="the qualification records, for why a plugin is below our bar (default: %(default)s)")
     parser.add_argument("--suffix", default=".ph", help="added before .zss in the name of each result (default: %(default)s)")
     args = parser.parse_args(argv)
     try:
@@ -170,13 +177,13 @@ def main(argv=None, out=sys.stdout):
     except (OSError, ValueError) as e:
         print(f"Can't read the engine config {args.engine_config}: {e}", file=out)
         return 2
-    pins = qualification.read_pins([p for p in args.pins.split(":") if p])
-    totals = [0, 0, 0, 0]
+    q = qualification.qualification(args.qualification, [p for p in args.pins.split(":") if p]).refresh()
+    totals = [0, 0, 0, 0, 0]
     for path in snapshot_files(args.paths, args.suffix):
-        converted, left, written = convert_file(path, engines, args.suffix, out, pins)
-        totals = [totals[0] + 1, totals[1] + written, totals[2] + converted, totals[3] + left]
-    print(f"{totals[0]} snapshots read, {totals[1]} written; {totals[2]} processors converted, {totals[3]} left as they are",
-          file=out)
+        converted, left, written, below = convert_file(path, engines, args.suffix, out, lambda url: q.facts(url, None))
+        totals = [totals[0] + 1, totals[1] + written, totals[2] + converted, totals[3] + left, totals[4] + below]
+    print(f"{totals[0]} snapshots read, {totals[1]} written; {totals[2]} processors converted, {totals[3]} left as they are; "
+          f"{totals[4]} converted processor{'' if totals[4] == 1 else 's'} below our bar (listed above)", file=out)
     return 0
 
 

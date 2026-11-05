@@ -35,7 +35,7 @@ from zyngine import zynthian_lv2
 from zyngine.zynthian_chain import *
 from zyngine.zynthian_engine_jalv import *
 from zyngine.zynthian_engine_pianoteq import *
-from zyngine.zynthian_plugin_hostd_catalogue import add_catalogue as plugin_hostd_catalogue
+from zyngine.zynthian_plugin_hostd_catalogue import add_catalogue as plugin_hostd_catalogue, refusal_text
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine.zynthian_processor import zynthian_processor
 from zyngine.zynthian_controller import zynthian_controller
@@ -92,6 +92,10 @@ engine2class = {
 # ----------------------------------------------------------------------------
 # Zynthian Chain Manager Class
 # ----------------------------------------------------------------------------
+
+
+# plugin-hostd refusals that say nothing of the plugin: the next add may be taken
+TRANSIENT_REFUSALS = ("WORKER_SPAWN", "GAVE_UP", "VERB_DROPPED")
 
 
 class zynthian_chain_manager:
@@ -1079,6 +1083,11 @@ class zynthian_chain_manager:
             if eng_code != 'None':
                 logging.error(f"Engine '{eng_code}' not found!")
             return None
+        if self.engine_info[eng_code].get("NOT_WORKING"):
+            # It does not load (plugin-hostd is not installed, or it refused this plugin's add): say why, add nothing
+            info = self.engine_info[eng_code]
+            self.add_refusal = f"{info.get('NAME') or eng_code}: {info.get('NOT_WORKING_WHY') or info['NOT_WORKING']}"
+            return None
         if proc_id is None:
             proc_id = self.get_available_processor_id()
             send_signal = True
@@ -1110,7 +1119,15 @@ class zynthian_chain_manager:
         except Exception as e:
             # The engine refused the processor (plugin-hostd's add answered an error): say why, and undo the insert
             processor.engine = None  # the engine never took it
-            self.add_refusal = f"{self.engine_info[eng_code].get('NAME') or eng_code}: {getattr(e, 'meaning', None) or e}"
+            info = self.engine_info[eng_code]
+            if getattr(e, "code", None) is not None:
+                why = refusal_text(getattr(e, "name", None), getattr(e, "meaning", None))
+                if (getattr(e, "name", "") or "").removeprefix("PHD_ERR_") not in TRANSIENT_REFUSALS:
+                    # it does not load: the menu lists it as not working, with this cause, until the catalogue is made again
+                    info.update(NOT_WORKING="does not load", NOT_WORKING_WHY=why)
+            else:
+                why = str(e)
+            self.add_refusal = f"{info.get('NAME') or eng_code}: {why}"
             logging.error(f"Can't add processor '{eng_code}' to chain {chain_id}: {e}")
             engine = None
         if not engine:

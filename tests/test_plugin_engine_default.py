@@ -55,12 +55,12 @@ class plugin_engine_case(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def catalogue(self, setting=None, binary=None, refused=()):
+    def catalogue(self, setting=None, binary=None):
         env = {} if setting is None else {"ZYNTHIAN_PLUGIN_ENGINE": setting}
         with mock.patch.dict(os.environ, env):
             if setting is None:
                 os.environ.pop("ZYNTHIAN_PLUGIN_ENGINE", None)
-            return cat.add_catalogue(self.engines, clap=[], binary=binary or self.binary, refused=set(refused))
+            return cat.add_catalogue(self.engines, clap=[], binary=binary or self.binary)
 
     def menu(self, etype):
         return sorted(self.by_type[etype])
@@ -88,27 +88,30 @@ class plugin_engine_case(unittest.TestCase):
         self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
         self.assertIn("ZYNTHIAN_PLUGIN_ENGINE=carla", logs.output[0])
 
-    def test_without_plugin_hostd_installed_the_menus_keep_jalv(self):
+    def test_without_plugin_hostd_installed_the_menu_says_so_and_offers_no_jalv_in_its_place(self):
         with self.assertLogs(level=logging.WARNING) as logs:
             self.catalogue(binary=os.path.join(os.path.dirname(self.binary), "absent"))
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp", "PH/ZamComp"])
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"], "jalv is never chosen for the user")
+        self.assertEqual(self.engines["PH/ZamComp"]["NOT_WORKING"], "not installed")
+        self.assertIn("plugin-hostd is not installed", self.engines["PH/ZamComp"]["NOT_WORKING_WHY"])
+        self.assertTrue(self.engines["PH/ZamComp"]["ENABLED"], "listed, so the menu can say why it does not work")
         self.assertIn("not installed", logs.output[0])
+        self.assertNotIn("jalv", logs.output[0])
 
-    def test_a_plugin_plugin_hostd_refuses_stays_on_jalv(self):
-        self.catalogue(refused=["urn:zamaudio:ZamComp"])
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"], "the refused one is offered once, through jalv")
-        self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"], "an accepted one is offered once, through plugin-hostd")
-        self.assertIn("PH/ZamComp", self.engines, "the PH entry stays known")
-
-    def test_the_refusals_come_from_the_pins_plugin_hostd_reads(self):
+    def test_a_plugin_its_pins_refuse_is_listed_once_under_plugin_hostd_never_moved_to_jalv(self):
         pins = os.path.join(os.path.dirname(self.binary), "qualified.pins")
         with open(pins, "w") as f:
-            f.write("pin_set urn:surge surge.so=00 omx-layout/1:00 verdict=refused\npin_set urn:zamaudio:ZamComp z.so=00 omx-layout/1:00 verdict=in-process\n")
+            f.write("pin_set urn:surge surge.so=00 omx-layout/1:00 verdict=refused\n"
+                    "pin_set urn:zamaudio:ZamComp z.so=00 omx-layout/1:00 verdict=refused\n")
         with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": pins}):
-            os.environ.pop("ZYNTHIAN_PLUGIN_ENGINE", None)
-            cat.add_catalogue(self.engines, clap=[], binary=self.binary)
-        self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "ZY"])
-        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
+            self.catalogue()
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"], "listed once, through plugin-hostd")
+        self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"])
+        self.assertNotIn("NOT_WORKING", self.engines["PH/ZamComp"], "below the bar is a mark of the menu, not a wall")
+
+    def test_under_jalv_the_user_chose_both_rows_stay(self):
+        self.catalogue("jalv")
+        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp", "PH/ZamComp"])
 
     def test_midi_tools_stay_with_jalv(self):
         self.catalogue()
