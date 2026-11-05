@@ -8,11 +8,11 @@
 > [plugin-qualify](https://github.com/FreeMixer/plugin-qualify), every plugin has a Factory and a User preset bank, and
 > controller pages follow the plugin's own sections. Its tests run in CI on every change.
 >
-> Tried on one Raspberry Pi 5: chains play, with levels and behaviour measured digitally at the JACK ports. The grouped figures measure plugin-hostd directly; a run through this engine on the Pi is next. On this fork the engine is the default; in the series offered upstream it stays off until a user sets it, and
+> On this fork the engine is the default; in the series offered upstream it stays off until a user sets it, and
 > setting `ZYNTHIAN_PLUGIN_ENGINE=jalv` goes back. Whether plugins share a worker is plugin-hostd's `grouping`
 > setting in `/zynthian/config/plugin-hostd.conf`: with `grouping off` each plugin runs in a worker of its own, and
-> `grouping on` lets the daemon plan which neighbours in series share one. What is proven and what is still open:
-> [plugin-hostd's Zynthian status](https://github.com/FreeMixer/plugin-hostd/blob/main/docs/zynthian/status.md).
+> `grouping on` lets the daemon plan which neighbours in series share one. How to install and use it, the measurements and where it stands:
+> <https://openmixer.org/docs/zynthian>.
 > The changes are offered upstream one step at a time, starting with
 > [zynthian-sys#228](https://github.com/zynthian/zynthian-sys/pull/228); the companion fork is
 > [FreeMixer/zynthian-sys](https://github.com/FreeMixer/zynthian-sys). Install the daemon and the packages from the
