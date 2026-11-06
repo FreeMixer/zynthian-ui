@@ -56,6 +56,7 @@ _lv2.get_plugin_presets_cache = lambda name: LV2_PRESETS.get(name, {})
 
 from zyngine import zynthian_engine_plugin_hostd as ph  # noqa: E402
 from zyngine import zynthian_plugin_hostd_catalogue as cat  # noqa: E402
+from zyngine import zynthian_plugin_hostd_grouping as grouping  # noqa: E402
 from zyngine.zynthian_chain import zynthian_chain  # noqa: E402
 from zyngine.zynthian_processor import zynthian_processor  # noqa: E402
 from fake_plugin_hostd import fake_plugin_hostd  # noqa: E402
@@ -126,6 +127,8 @@ class plugin_hostd_case(unittest.TestCase):
         self.info = {"JV/Amp": lv2_info("Amp", "urn:test:amp"), "JV/NoPin": lv2_info("NoPin", "urn:test:nopin"),
                      "JV/Big": lv2_info("Big", "urn:test:big")}
         cat.add_catalogue(self.info, clap=cat.parse_clap_scan(CLAP_SCAN), binary=FAKE)
+        # The graph as a worker leaves it after a chain: a member it runs in the head's client has no port
+        sys.modules["zynautoconnect"].get_ports.return_value = []
         self.sm = mock.MagicMock()
         self.sm.chain_manager.engine_info = self.info
         self.sm.chain_manager.chains = {}
@@ -252,9 +255,11 @@ class test_daemon(plugin_hostd_case):
         self.assertNotEqual(ph.daemon.pid, first)
         second = str(ph.daemon.pid)
         lines = [line for pid, line in self.journal() if pid == second]
-        for expected in ("add urn:test:amp 1000", "add urn:test:amp 1001", "param_set 1001 gain 4.5"):
+        for expected in ("add urn:test:amp 1000", "add urn:test:amp 1001", "param_set 1001 gain 4.5",
+                         "chain 1 1000 1001"):
             self.assertIn(expected, lines)
         self.assertEqual(lines[-1], "param_set 1000 gain -2.0", "the command that met the dead daemon is sent last")
+        self.assertLess(lines.index("param_set 1001 gain 4.5"), lines.index("chain 1 1000 1001"))
 
 
 class test_protocol(plugin_hostd_case):
@@ -283,6 +288,7 @@ class test_protocol(plugin_hostd_case):
         for code, name in ((-2, "ERR_INSTANCE_ALREADY_EXISTS"), (-529, "PHD_ERR_DESCRIPTOR_ABSENT"),
                            (-902, "ERR_INVALID_OPERATION")):
             self.assertEqual(ph.protocol.name(code), name)
+        self.assertEqual(ph.CHAIN_FALLBACK_CODES, (-501, -519, -520, -521))
         self.assertEqual((ph.DESCRIPTOR_PENDING, ph.DESCRIPTOR_NONE), (-530, (-529, -531)))
 
     def test_the_engine_types_no_reply_code(self):
@@ -557,6 +563,329 @@ class test_processor(plugin_hostd_case):
         self.assertEqual(proc.jackname, "effect_1000")
         self.assertNotIn("remove 1000", fake.lines)
         self.assertEqual(fake.params[1000]["gain"], 5.0)
+
+
+class test_chain(plugin_hostd_case):
+
+    def test_insert_reorder_and_remove_declare_the_chain(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b, c = (self.add(chain, "PH/Amp") for _ in range(3))
+        self.assertIn("chain 1 1000 1001", fake.lines)
+        self.assertEqual(fake.chains[1], (1000, 1001, 1002))
+        sent = fake.lines.count("chain 1 1000 1001 1002")
+        chain.rebuild_graph()
+        self.assertEqual(fake.lines.count("chain 1 1000 1001 1002"), sent, "an unchanged chain is not sent again")
+        chain.nudge_processor(c, True)  # into the slot of b, in parallel: same order
+        chain.nudge_processor(c, True)  # out of it, before b
+        self.assertEqual(fake.chains[1], (1000, 1002, 1001))
+        self.remove(chain, b)
+        self.assertEqual(fake.chains[1], (1000, 1002))
+        self.assertLess(fake.lines.index("chain 1 1000 1002"), fake.lines.index("remove 1001"))
+        self.remove(chain, c)
+        self.assertNotIn(1, fake.chains, "a chain of one member is cleared")
+        self.assertIn("chain_clear 1", fake.lines)
+
+    def test_a_refused_chain_falls_back_to_separate_workers_and_logs_once(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.add(chain, "PH/Amp")
+        self.assertEqual(fake.chains[1], (1000, 1001))
+        with self.assertLogs(level=logging.WARNING) as logs:
+            self.add(chain, "PH/NoPin")
+            chain.rebuild_graph()
+            self.add(chain, "PH/Amp")
+            logging.warning("end")
+        refused = [r for r in logs.output if "separate workers" in r]
+        self.assertEqual(len(refused), 1)
+        self.assertIn("PHD_ERR_PLACEMENT_INVALID", refused[0])
+        self.assertNotIn(1, fake.chains, "the chain it had is cleared, each member back in a worker of its own")
+        self.assertEqual(fake.lines.count("chain 1 1000 1001 1002"), 1, "refused members are not sent again")
+
+    def test_each_fallback_code_falls_back_and_another_refusal_does_not(self):
+        fake = self.serve()
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        for code in (-501, -519, -520, -521, -518):
+            ph.daemon.chain_refused.clear()
+            ph.daemon.chains[1] = (1000, 9999)
+            fake.chains[1] = (1000,)
+            fake.verb_chain = lambda *args, code=code: f"resp {code}"
+            self.add(chain, "PH/Amp") if code == -501 else chain.rebuild_graph()
+            fell_back = code in ph.CHAIN_FALLBACK_CODES
+            self.assertEqual(1 not in fake.chains, fell_back, f"code {code}")
+            self.assertEqual(1 in ph.daemon.chain_refused, fell_back, f"code {code}")
+
+
+class test_chain_jack_names(plugin_hostd_case):
+    """The members of a CLAP chain are one jack client; the processors name the client the daemon says."""
+
+    CLAP = "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"
+
+    def test_the_daemons_replies_name_the_chains_client(self):
+        # The replies of the issue: three CLAP members added, chain 1 0 1 2, read back
+        fake = self.serve()
+        fake.verb_chain_get = lambda chain: "resp 0 w4 0,1,2 0,1,2"
+        fake.verb_worker_list = lambda: "resp 1 w4:111797:clap:up:1:qualified:chain:1:0,1,2"
+        ph.daemon.call("worker_list")
+        ph.daemon.engines = {i: types.SimpleNamespace(jackname=f"effect_{i}") for i in (0, 1, 2)}
+        self.addCleanup(ph.daemon.engines.clear)
+        self.assertEqual(ph.chain_clients(1), {0: "effect_0", 1: "effect_0", 2: "effect_0"})
+
+    def test_a_chain_of_clap_members_is_one_client_named_for_its_head(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(3)]
+        self.assertEqual(fake.chains[1], (1000, 1001, 1002))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000"] * 3)
+        self.assertEqual([p.engine.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1002"],
+                         "each engine still names its own instance")
+        # Every connect is made on ports of the one client that exists: nothing is routed to or from
+        # effect_1001 or effect_1002, and the client is not routed to itself
+        clients = {name for dst, src in chain.audio_routes.items() for name in [dst] + src}
+        self.assertNotIn("effect_1001", clients)
+        self.assertNotIn("effect_1002", clients)
+        self.assertEqual(chain.audio_routes["effect_1000"], [], "the head is fed by the chain's input")
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1000"], "the chain's output is the client's")
+
+    def test_a_mixed_lv2_and_clap_chain_is_one_client_named_for_its_head(self):
+        fake = self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, self.CLAP)
+        self.assertEqual(fake.chains[1], (1000, 1001))
+        self.assertIn(":lv2-clap:up:1:qualified:chain:1:1000,1001", fake.verb_worker_list())
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1000"))
+        self.assertNotIn("effect_1001", {name for dst, src in chain.audio_routes.items() for name in [dst] + src})
+        for out in chain.get_audio_out():
+            self.assertEqual(chain.audio_routes[out], ["effect_1000"])
+
+    def test_a_chain_of_lv2_members_keeps_a_client_per_member(self):
+        self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
+
+    def test_a_member_the_worker_does_not_run_keeps_its_own_client(self):
+        fake = self.serve()
+        chain_get = fake.verb_chain_get
+        # 1001 is quarantined: declared, not running
+        fake.verb_chain_get = lambda c: re.sub(r"(\S+) (\S+) (\S+)$", r"\1 \2 1000,1002", chain_get(c))
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(3)]
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
+
+    def test_a_member_taken_out_goes_back_to_its_own_client_and_the_head_moves(self):
+        self.serve()
+        chain = self.chain()
+        a, b, c = (self.add(chain, self.CLAP) for _ in range(3))
+        self.remove(chain, a)
+        self.assertEqual((b.jackname, c.jackname), ("effect_1001", "effect_1001"), "the head is now 1001")
+        self.remove(chain, c)
+        self.assertEqual(b.jackname, "effect_1001")
+        self.assertNotIn(1, ph.daemon.clients)
+
+    def test_a_refused_chain_gives_every_member_its_own_client(self):
+        self.serve()
+        chain = self.chain()
+        a, b = self.add(chain, self.CLAP), self.add(chain, self.CLAP)
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1000"))
+        c = self.add(chain, "PH/NoPin")  # -501: the daemon will not run the three together
+        self.assertEqual([p.jackname for p in (a, b, c)], ["effect_1000", "effect_1001", "effect_1002"])
+
+    def test_a_restored_daemon_names_the_clients_again(self):
+        fake = self.serve()
+        chain = self.chain()
+        procs = [self.add(chain, self.CLAP) for _ in range(2)]
+        ph.daemon.client.close()
+        fake.stop()
+        fake2 = self.serve()
+        ph.daemon.call("worker_list")
+        self.assertEqual(fake2.chains[1], (1000, 1001))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1000"])
+
+
+class test_plan(plugin_hostd_case):
+    """sync_chain hands the chain to the daemon's planner and takes its segments."""
+
+    CLAP = "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"
+    CLAP_URI = "clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono"
+    ISOLATED = {"urn:test:amp": "isolated"}  # the Amp is a plugin the pin says to isolate
+
+    def five(self, fake, order=("clap", "clap", "amp", "clap", "clap")):
+        chain = self.chain()
+        return chain, [self.add(chain, self.CLAP if kind == "clap" else "PH/Amp") for kind in order]
+
+    def test_the_segments_are_the_daemons_and_a_lone_member_stays_its_own_client(self):
+        # plan 1 1000 1001 1002 1003 1004 answered resp 0 1000,1001;1002;1003,1004
+        fake = self.serve(planner=True, grouping=True, verdicts=self.ISOLATED)
+        chain, procs = self.five(fake)
+        self.assertEqual(fake.lines.count("plan 1 1000 1001 1002 1003 1004"), 1)
+        self.assertEqual(fake.plans[1][0], [[1000, 1001], [1002], [1003, 1004]])
+        self.assertNotIn("chain 1 1000 1001 1002 1003 1004", fake.lines, "the chain verb is not sent over a plan")
+        self.assertEqual([p.jackname for p in procs],
+                         ["effect_1000", "effect_1000", "effect_1002", "effect_1003", "effect_1003"])
+        self.assertEqual([p.engine.jackname for p in procs], [f"effect_{i}" for i in range(1000, 1005)],
+                         "each engine still names its own instance")
+        clients = {name for dst, src in chain.audio_routes.items() for name in [dst] + src}
+        self.assertEqual(clients & {f"effect_{i}" for i in (1001, 1004)}, set(), "no connect to a client that is not there")
+        workers = fake.verb_worker_list()
+        self.assertIn(":clap:up:1:qualified:chain:1.0:1000,1001", workers)
+        self.assertIn(":clap:up:1:qualified:chain:1.2:1003,1004", workers)
+        self.assertNotIn("chain:1.1:", workers, "a lone segment has no worker of its own to name")
+
+    def test_a_segment_worker_of_the_lv2_row_keeps_a_client_per_member(self):
+        fake = self.serve(planner=True, grouping=True)
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.assertIn(":lv2:up:1:qualified:chain:1.0:1000,1001", fake.verb_worker_list())
+        self.assertEqual((a.jackname, b.jackname), ("effect_1000", "effect_1001"))
+
+    def test_the_reason_of_every_member_left_alone_is_what_plan_get_says(self):
+        fake = self.serve(planner=True, grouping=True, verdicts=self.ISOLATED)
+        chain, procs = self.five(fake, ("clap", "amp", "clap", "clap", "amp"))
+        self.assertEqual(fake.verb_plan_get(1), "resp 0 1000;1001;1002,1003;1004 1000:no-neighbour,1001:verdict-isolated,"
+                                                "1004:verdict-isolated -;-;-,-;-")
+        self.assertEqual([p.engine.grouping_reason() for p in procs],
+                         ["no-neighbour", "verdict-isolated", None, None, "verdict-isolated"])
+        self.assertEqual([p.engine.grouping_text() for p in procs],
+                         ["Alone: no neighbour it can share a worker with",
+                          "Not grouped: it was qualified to run isolated", None, None,
+                          "Not grouped: it was qualified to run isolated"])
+
+    def test_a_member_leaving_replans_and_the_reasons_follow(self):
+        fake = self.serve(planner=True, grouping=True, verdicts=self.ISOLATED)
+        chain, procs = self.five(fake)
+        self.remove(chain, procs[2])  # the isolated one
+        self.assertEqual(fake.plans[1][0], [[1000, 1001, 1003, 1004]])
+        self.assertEqual([p.jackname for p in procs if p is not procs[2]], ["effect_1000"] * 4)
+        self.assertIsNone(ph.daemon.reasons.get(1002), "the reason of a removed instance is forgotten")
+        self.assertEqual(ph.daemon.reasons, {})
+        self.remove(chain, procs[1])
+        self.remove(chain, procs[0])
+        self.remove(chain, procs[3])
+        self.assertNotIn(1, fake.plans, "a chain left with one member is cleared")
+        self.assertIn("plan_clear 1", fake.lines)
+        self.assertEqual(procs[4].jackname, "effect_1004")
+
+    def test_an_unchanged_chain_is_not_planned_again(self):
+        fake = self.serve(planner=True, grouping=True)
+        chain, procs = self.five(fake, ("clap",) * 3)
+        sent = fake.lines.count("plan 1 1000 1001 1002")
+        chain.rebuild_graph()
+        self.assertEqual(fake.lines.count("plan 1 1000 1001 1002"), sent)
+        self.assertEqual(sent, 1)
+
+    def test_a_member_the_worker_does_not_run_keeps_its_own_client(self):
+        fake = self.serve(planner=True, grouping=True)
+        worker_list = fake.verb_worker_list
+        # 1001 is quarantined: it has a worker of its own and the segment's worker no longer runs it
+        fake.verb_worker_list = lambda: worker_list().replace("1000,1001,1002", "1000,1002") \
+            .replace("resp 1", "resp 2") + " w1:1:clap:up:1:qualified:own:1001"
+        chain, procs = self.five(fake, ("clap",) * 3)
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
+
+    def test_a_member_the_daemon_lists_in_the_segment_and_in_a_worker_of_its_own_keeps_its_own_client(self):
+        fake = self.serve(planner=True, grouping=True)
+        worker_list = fake.verb_worker_list
+        fake.verb_worker_list = lambda: worker_list().replace("resp 1", "resp 2") + " w1:1:clap:up:1:qualified:own:1001"
+        chain, procs = self.five(fake, ("clap",) * 3)
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1000"])
+
+    def test_a_daemon_that_does_not_know_plan_gets_the_whole_chain_and_one_log_line(self):
+        fake = self.serve(planner=False)
+        with self.assertLogs(level=logging.WARNING) as logs:
+            chain, procs = self.five(fake, ("clap",) * 3)
+            chain.rebuild_graph()
+            logging.warning("end")
+        said = [r for r in logs.output if "does not answer plan" in r]
+        self.assertEqual(len(said), 1, "the fallback is told once, not at every rebuild")
+        self.assertEqual(fake.chains[1], (1000, 1001, 1002))
+        self.assertEqual([p.jackname for p in procs], ["effect_1000"] * 3)
+        self.assertEqual(fake.lines.count("plan 1 1000 1001"), 1, "the plan is asked once of such a daemon")
+        self.assertEqual(ph.daemon.reasons, {})
+        self.assertFalse(ph.daemon.plan_verbs)
+
+    def test_a_refusal_of_chain_still_falls_back_with_the_old_daemon(self):
+        fake = self.serve(planner=False)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.add(chain, "PH/Amp")
+        self.add(chain, "PH/NoPin")
+        self.assertNotIn(1, fake.chains)
+        self.assertIn(1, ph.daemon.chain_refused)
+
+    def test_with_grouping_off_nothing_runs_together(self):
+        # the setting is the daemon's answer, and going around it with chain would group what it says not to
+        fake = self.serve(planner=True, grouping=False, verdicts=self.ISOLATED)
+        chain, procs = self.five(fake, ("clap",) * 3)
+        self.assertNotIn(1, fake.chains)
+        self.assertFalse([l for l in fake.lines if l.startswith("chain ")], "no chain line goes around the setting")
+        self.assertEqual(fake.lines.count("plan 1 1000 1001"), 1)
+        self.assertEqual(fake.lines.count("plan_clear 1"), 1, "the answered plan is not left kept")
+        self.assertEqual(fake.lines.count("plan_get 1"), 1)
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1002"])
+        self.assertEqual(ph.daemon.reasons, {}, "nothing is said of plugins that run alone by the setting")
+        self.assertIs(ph.daemon.grouping, False)
+        sent = len(fake.lines)
+        self.add(chain, "PH/Amp")
+        self.assertEqual([l for l in fake.lines[sent:] if l.startswith(("plan", "chain "))], [],
+                         "once grouping is known to be off nothing is asked again")
+
+    def test_a_refused_plan_leaves_every_member_alone_with_the_refusal_as_the_reason(self):
+        fake = self.serve(planner=True, grouping=True)
+        fake.verb_plan = lambda *args: "resp -501"
+        with self.assertLogs(level=logging.WARNING) as logs:
+            chain, procs = self.five(fake, ("clap",) * 3)
+            logging.warning("end")
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001", "effect_1002"])
+        self.assertEqual([p.engine.grouping_reason() for p in procs], ["plan-refused:-501"] * 3)
+        self.assertEqual(procs[0].engine.grouping_text(), "Not grouped: the daemon refused the plan (PHD_ERR_PLACEMENT_INVALID)")
+        self.assertEqual(len([r for r in logs.output if "every member runs alone" in r]), 2, "one per change of members")
+
+    def test_a_malformed_reply_is_logged_and_leaves_the_members_as_they_were(self):
+        fake = self.serve(planner=True, grouping=True)
+        fake.verb_plan = lambda *args: "resp 0 x;y"
+        with self.assertLogs(level=logging.ERROR):
+            chain, procs = self.five(fake, ("clap",) * 2)
+        self.assertEqual([p.jackname for p in procs], ["effect_1000", "effect_1001"])
+
+    def test_a_restored_daemon_is_planned_again(self):
+        fake = self.serve(planner=True, grouping=True, verdicts=self.ISOLATED)
+        chain, procs = self.five(fake)
+        ph.daemon.client.close()
+        fake.stop()
+        fake2 = self.serve(planner=True, grouping=True, verdicts=self.ISOLATED)
+        ph.daemon.call("worker_list")
+        self.assertEqual(fake2.plans[1][0], [[1000, 1001], [1002], [1003, 1004]])
+        self.assertEqual([p.jackname for p in procs],
+                         ["effect_1000", "effect_1000", "effect_1002", "effect_1003", "effect_1003"])
+        self.assertEqual(procs[2].engine.grouping_reason(), "verdict-isolated")
+
+
+class test_grouping_texts(unittest.TestCase):
+
+    def test_every_word_the_daemon_declares_has_a_text(self):
+        declared = grouping.declared_words(FIXTURES)
+        self.assertEqual(len(declared), 13)
+        self.assertEqual(declared - {grouping.PLAN_REFUSED}, set(grouping.TEXTS))
+        for word in declared - {grouping.PLAN_REFUSED}:
+            self.assertEqual(grouping.text(word), grouping.TEXTS[word])
+            self.assertLess(len(grouping.text(word)), 64, word)
+
+    def test_the_text_of_a_refusal_names_the_code_by_the_daemons_name(self):
+        self.assertEqual(grouping.text("plan-refused:-518", ph.protocol.name),
+                         "Not grouped: the daemon refused the plan (PHD_ERR_CHAIN_UNKNOWN_INSTANCE)")
+        self.assertEqual(grouping.text("plan-refused:-1234", ph.protocol.name),
+                         "Not grouped: the daemon refused the plan (ERR_1234)")
+        self.assertEqual(grouping.text("plan-refused:x"), "Not grouped: the daemon refused the plan (x)")
+
+    def test_a_word_it_has_no_text_for_reads_as_the_word(self):
+        self.assertEqual(grouping.text("brand-new"), "Not grouped: brand-new")
+
+    def test_an_unreadable_declaration_is_none(self):
+        self.assertIsNone(grouping.declared_words("/nonexistent"))
 
 
 class test_plugin_window(plugin_hostd_case):

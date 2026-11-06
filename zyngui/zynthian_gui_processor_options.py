@@ -91,6 +91,10 @@ class zynthian_gui_processor_options(zynthian_gui_selector_info):
         #self.list_data.append((self.control_view, None, "Control View"))
         # Processor info
         self.list_data.append((self.show_details, None, "Info", ["Show information about this processor.", "info.png"]))
+        grouping = getattr(self.processor.engine, "grouping_text", lambda: None)()
+        if grouping:
+            self.list_data.append((self.show_grouping, None, "Grouping", [grouping, "info.png"]))
+
         engine = self.processor.engine
         if getattr(engine, "has_window", lambda: False)():
             title = "Hide plugin window" if engine.window_shown() else "Show plugin window"
@@ -150,6 +154,9 @@ class zynthian_gui_processor_options(zynthian_gui_selector_info):
 
     def show_details(self):
         self.zyngui.screens["engine"].show_details(self.processor.eng_code)
+
+    def show_grouping(self):
+        self.zyngui.show_info(self.processor.engine.grouping_text())
 
     def compare_step(self, step):
         failure = self.processor.engine.compare_step(step)

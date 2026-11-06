@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 #
 # The processor options screen (zyngui/zynthian_gui_processor_options.py) lists Show or Hide plugin window for a
-# plugin-hostd plugin that has a window of its own, and none for any other processor. The base screens are
-# stand-ins; the screen code is the real one.
+# plugin-hostd plugin that has a window of its own, and a Grouping entry for one the daemon's plan left alone, with
+# the text of the reason; none for any other processor. The base screens are stand-ins; the screen code is the real
+# one.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -49,6 +50,34 @@ def load_screen():
 
 
 screen_module = load_screen()
+
+
+class processor_options_grouping(unittest.TestCase):
+
+    def entries(self, engine):
+        screen = screen_module.zynthian_gui_processor_options.__new__(screen_module.zynthian_gui_processor_options)
+        screen.last_random = {}
+        screen.zyngui = mock.MagicMock()
+        screen.processor = mock.MagicMock(type="Audio Effect", eng_code="PH/x", engine=engine)
+        screen.processor.is_bypassed.return_value = False
+        screen.processor.chain.get_processor_count.return_value = 1
+        screen.fill_list()
+        return screen, [row for row in screen.filled if row[2] == "Grouping"]
+
+    def test_a_plugin_left_alone_lists_the_reason(self):
+        screen, rows = self.entries(types.SimpleNamespace(grouping_text=lambda: "Alone: no neighbour it can share a worker with"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][3], ["Alone: no neighbour it can share a worker with", "info.png"])
+        titles = [row[2] for row in screen.filled]
+        self.assertEqual(titles.index("Grouping"), titles.index("Info") + 1)
+        rows[0][0]()
+        screen.zyngui.show_info.assert_called_once_with("Alone: no neighbour it can share a worker with")
+
+    def test_a_plugin_with_no_reason_lists_nothing(self):
+        self.assertEqual(self.entries(types.SimpleNamespace(grouping_text=lambda: None))[1], [])
+
+    def test_an_engine_that_does_not_group_lists_nothing(self):
+        self.assertEqual(self.entries(types.SimpleNamespace())[1], [])
 
 
 class processor_options_window(unittest.TestCase):

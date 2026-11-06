@@ -1,0 +1,65 @@
+{
+  "$schema": "../schema/omx-contract.schema.json",
+  "requires": {
+    "omx-contract-schema": ">= 3.3.0"
+  },
+  "PLUGIN_HOSTD_GROUPING_REASONS": {
+    "kind": "words",
+    "since": "0.13.0",
+    "doc": "Why a member of a plan is not in a segment with its neighbours, or is in one on an assumption (the grouping-planner design note, The planner), in the order the planner's rules decide them. plan_get answers them as instance:reason; a plan_reason event carries the same. A controller reads these words and retypes none.",
+    "words": {
+      "refused": {
+        "word": "refused",
+        "doc": "The pin's verdict is refused: the plugin is not run in a group, and an add of it answers -516."
+      },
+      "noPin": {
+        "word": "no-pin",
+        "doc": "The plugin has no pin and pin_mode is strict: an add of it answers -508."
+      },
+      "noVerdict": {
+        "word": "no-verdict",
+        "doc": "The pin carries no verdict (a pin the daemon learned on first use): the plugin stays alone."
+      },
+      "verdictIsolated": {
+        "word": "verdict-isolated",
+        "doc": "The pin's verdict is isolated: the plugin stays alone."
+      },
+      "formatWorld": {
+        "word": "format-world",
+        "doc": "The plugin's format pins only in a world of its own and no world holding the plugin can be built for a shared worker: it stays alone."
+      },
+      "costOver": {
+        "word": "cost-over",
+        "doc": "The plugin's cost, alone, is over group_cost_max: it stays alone."
+      },
+      "formatMixed": {
+        "word": "format-mixed",
+        "doc": "No one worker program runs this plugin together with the open segment: it starts a new segment."
+      },
+      "groupFull": {
+        "word": "group-full",
+        "doc": "The open segment holds group_max members: the plugin starts a new segment."
+      },
+      "groupCost": {
+        "word": "group-cost",
+        "doc": "Adding the plugin's cost takes the open segment over group_cost_max: it starts a new segment."
+      },
+      "costAssumed": {
+        "word": "cost-assumed",
+        "doc": "The plugin has no known cost and joined a segment at the median of the known costs of that segment, zero when none is known."
+      },
+      "noNeighbour": {
+        "word": "no-neighbour",
+        "doc": "The plugin passed every rule but has no neighbour it can share a worker with: it is alone only because of the members around it."
+      },
+      "groupingOff": {
+        "word": "grouping-off",
+        "doc": "The setting grouping is off: the plugin would share a worker, and the plan was answered and not applied."
+      },
+      "planRefused": {
+        "word": "plan-refused",
+        "doc": "A segment could not be formed: the plan was not applied and nothing moved. The word is followed by a colon and the number of the refusal, plan-refused:-501."
+      }
+    }
+  }
+}
