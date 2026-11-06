@@ -37,6 +37,7 @@ import zynconf
 import zynautoconnect
 from zyncoder.zyncore import lib_zyncore
 from zyngui import zynthian_gui_config
+from zyngine import zynthian_plugin_tiers
 from zyngui.zynthian_gui_selector_info import zynthian_gui_selector_info
 
 # -------------------------------------------------------------------------------
@@ -170,6 +171,8 @@ class zynthian_gui_admin(zynthian_gui_selector_info):
                 self.list_data.append((self.start_rbpi_headphones, 0, "\u2610 RBPi Headphones",
                                        ["RBPi onboard headphone output (Lo-Fi) is disabled", "headphones.png"]))
 
+        self.list_data.append((self.plugin_bar_menu, 0, "Plugin bar",
+                               ["What the plugin lists do with a plugin that did not pass qualification.\nQualified only: they are not listed.\nWarn on crashes: listed after the others, and one that crashed asks first.\nLoad all: listed after the others, nothing asked.\nA plugin below the bar runs in plugin-hostd in a worker of its own, never in another host. Saved, and applied at once.", "audio_options.png"]))
         self.list_data.append((self.hotplug_audio_menu, 0, "Hotplug USB Audio",
                                ["Configure hotplug USB audio interfaces.\nWhen enabled, USB audio interfaces will be detected and available. The main audio interface, that must always remain connected, is not included, nor the interface used for ZynVoice.", "audio_options.png"]))
 
@@ -472,6 +475,21 @@ class zynthian_gui_admin(zynthian_gui_selector_info):
         else:
             options[f"\u2610 Hotplug Audio"] = ["enable_hotplug", ["Toggle USB hotplug audio enable.", None]]
         return options
+
+    def get_plugin_bar_menu_options(self):
+        return zynthian_plugin_tiers.bar_menu_options()
+
+    def plugin_bar_menu(self):
+        self.zyngui.screens['option'].config("Plugin bar", self.get_plugin_bar_menu_options(), self.plugin_bar_cb, False)
+        self.zyngui.show_screen('option')
+
+    def plugin_bar_cb(self, option, value):
+        """Save the bar and apply it now: the engine screen takes it at its next list, no restart."""
+        zynthian_plugin_tiers.set_plugin_bar(value)
+        engine = self.zyngui.screens.get('engine')
+        if engine is not None:
+            engine.refresh_bar()
+        self.zyngui.screens['option'].config("Plugin bar", self.get_plugin_bar_menu_options(), self.plugin_bar_cb, False)
 
     def hotplug_audio_menu(self):
         self.zyngui.screens['option'].config("Hotplug Audio", self.get_hotplug_menu_options(), self.hotplug_audio_cb, False)

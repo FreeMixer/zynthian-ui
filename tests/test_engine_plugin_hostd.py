@@ -1306,6 +1306,15 @@ class test_below_bar(plugin_hostd_case):
         self.assertEqual(proc.engine.replay_lines()[0], "add urn:test:amp 1000 own")
         self.assertIsNone(ph.member_of(proc, "urn:test:amp"), "it joins no run")
 
+    def test_a_refused_plugin_is_not_accepted_under_qualified_only_and_its_add_says_why(self):
+        self.qualify("pin_set urn:test:amp amp.so=00 omx-layout/1:00 verdict=refused\n")
+        with mock.patch.object(fake_plugin_hostd, "REFUSED", {"urn:test:amp"}), \
+                mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_BAR": "qualified-only"}):
+            fake = self.serve()
+            with self.assertRaises(ph.plugin_hostd_error):
+                self.add(self.chain(), "PH/Amp")
+        self.assertNotIn("pin_accept", [l.split()[0] for l in fake.lines], "the user said no to plugins below the bar")
+
     def test_a_plugin_that_crashed_in_qualification_runs_alone_and_nothing_is_accepted(self):
         records = os.path.join(self.tmp, "records")
         os.mkdir(records)
