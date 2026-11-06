@@ -90,10 +90,13 @@ def log_once(key, msg, *args):
 class plugin_hostd_error(Exception):
     """A negative reply, carrying its code and its name."""
 
-    def __init__(self, code, line):
+    def __init__(self, code, line, word=None, position=None):
         self.code = code
-        self.name = protocol.name(code)
-        super().__init__(f"'{line}' => {self.name} ({code})")
+        self.word = word  # the error word of a session granted errors, reply.<group>.<reason>
+        self.position = position  # the pair a bulk line was refused at, from 1
+        self.name = word or protocol.name(code)  # the word when the daemon says it, else the protocol file's name
+        at = f" at {position}" if position else ""
+        super().__init__(f"'{line}' => {self.name} ({code}){at}")
 
 
 class plugin_hostd_down(Exception):
@@ -109,6 +112,10 @@ FAILURES = (plugin_hostd_error, plugin_hostd_down, plugin_hostd_timeout)
 
 # ---- Protocol client: one NUL-terminated line out, one NUL-terminated reply back ----
 
+HELLO = "hello 1 tags errors"  # protocol 0.3 of plugin-hostd-protocol: tags and error words; seq is for the feedback port
+HELLO_EXTENSIONS = ("tags", "errors")
+
+
 class plugin_hostd_client:
 
     def __init__(self, port, host="127.0.0.1"):
@@ -116,12 +123,17 @@ class plugin_hostd_client:
         self.port = port
         self.sock = None
         self.buf = b""
+        self.version = None  # the protocol version the daemon answered hello with; None for a daemon that does not
+        self.granted = ()  # the extensions it granted
+        self.tag_count = 0
 
     def close(self):
         if self.sock:
             self.sock.close()
         self.sock = None
         self.buf = b""
+        self.version = None
+        self.granted = ()
 
     def read_line(self, line, deadline, timeout):
         """The next NUL-terminated reply, as text."""
@@ -142,16 +154,45 @@ class plugin_hostd_client:
         reply, _, self.buf = self.buf.partition(b"\0")
         return reply.decode(errors="replace")
 
+    def exchange(self, line, timeout):
+        """Send a line; the raw text of its reply. With tags granted the line carries a tag of its own and the
+        replies of any other tag are dropped: they answer a request that nobody waits for any more."""
+        deadline = time.monotonic() + timeout
+        tag = None
+        if "tags" in self.granted:
+            self.tag_count += 1
+            tag = f"@z{self.tag_count}"
+        try:
+            self.sock.settimeout(timeout)
+            self.sock.sendall((f"{tag} {line}" if tag else line).encode() + b"\0")
+            while True:
+                reply = self.read_line(line, deadline, timeout)
+                if tag is None:
+                    return reply
+                head, _, rest = reply.partition(" ")
+                if head == tag:
+                    return rest
+                logging.debug(f"plugin-hostd reply '{reply[:64]}' is not for {tag}, dropped")
+        except OSError:
+            self.close()
+            raise
+
+    def hello(self):
+        """Open the session: ask for the protocol 0.3 extensions. A daemon that does not know hello (not found, or
+        the refusal of an invalid operation) is an older one, and the session stays as it was: no tags, no error words, no bulk verbs."""
+        words = self.exchange(HELLO, TIMEOUT).split()
+        if len(words) >= 3 and words[0] == "resp" and words[1] == "0" and words[2].isdigit():
+            self.version = int(words[2])
+            self.granted = tuple(w for w in words[3:] if w in HELLO_EXTENSIONS)
+
     def call(self, line, timeout=TIMEOUT):
         """Send a line, return (code, rest) or raise plugin_hostd_error for a negative code.
         A connection error is raised as OSError; a timeout as plugin_hostd_timeout."""
         try:
             if self.sock is None:
                 self.sock = socket.create_connection((self.host, self.port), timeout=TIMEOUT)
-            deadline = time.monotonic() + timeout
-            self.sock.settimeout(timeout)
-            self.sock.sendall(line.encode() + b"\0")
-            reply = self.read_line(line, deadline, timeout)
+                self.hello()
+            reply = self.exchange(line, timeout)
         except OSError:
             self.close()
             raise
@@ -159,9 +200,15 @@ class plugin_hostd_client:
         if len(words) < 2 or words[0] != "resp":
             raise plugin_hostd_error(protocol.code("ERR_INVALID_OPERATION"), f"{line} (reply '{reply[:64]}')")
         code = int(words[1])
+        rest = words[2] if len(words) > 2 else ""
         if code < 0:
-            raise plugin_hostd_error(code, line)
-        return code, (words[2] if len(words) > 2 else "")
+            # The daemon's word for the code, when it was granted errors; the pair a bulk line was refused at
+            head, _, tail = rest.partition(" ")
+            word = head if head.startswith("reply.") else None
+            if word:
+                rest = tail
+            raise plugin_hostd_error(code, line, word, int(rest) if rest.isdigit() else None)
+        return code, rest
 
 
 # ---- The daemon: started when none answers, reused when one does (a service, or another UI started it) ----
@@ -184,6 +231,7 @@ class plugin_hostd_daemon:
         self.reasons = {}  # member instance => the reason word plan_get gave for it
         self.plan_verbs = None  # whether the daemon answers plan: None until it was asked
         self.grouping = None  # False once a plan came back with grouping-off; None while that is not known
+        self.bulk_verbs = None  # whether the daemon answers param_get_many and param_set_many: False once it refused them
         self.asked_at = {}  # run number => when it was last refused, or planned with a reason that can change
         self.pending = {}  # zynthian chain id => chain whose runs wait for the end of a busy section, see sync_chain
         self.synced = {}  # zynthian chain id => chain whose runs were declared, read back by the watch
@@ -239,6 +287,7 @@ class plugin_hostd_daemon:
     def restore(self):
         self.client.close()
         self.ensure()
+        self.identify()  # the connection, and its hello, before the replay chooses its lines
         self.runs = {}
         self.chains = {}
         self.chain_refused = {}
@@ -248,11 +297,17 @@ class plugin_hostd_daemon:
         self.asked_at = {}
         self.plan_verbs = None  # the daemon that came back may be another version, with another setting
         self.grouping = None
+        self.bulk_verbs = None
         for instance in sorted(self.engines):
-            for line in self.engines[instance].replay_lines():
+            for line in self.engines[instance].replay_lines(self.bulk_ok()):
                 try:
                     self.client.call(line, SLOW_TIMEOUT)
                 except plugin_hostd_error as e:
+                    if line.startswith("param_set_many "):
+                        # All or nothing, and refused: the values go one by one, as an old daemon takes them
+                        self.bulk_refused(e)
+                        self.replay_each(instance)
+                        continue
                     # An instance that outlived the connection has nothing to put back
                     outlived = e.code == protocol.code("ERR_INSTANCE_ALREADY_EXISTS")
                     if not outlived:
@@ -262,6 +317,24 @@ class plugin_hostd_daemon:
         for chain_manager in {id(e.chain_manager): e.chain_manager for e in self.engines.values()}.values():
             for chain in list(chain_manager.chains.values()):
                 sync_chain(chain)
+
+    def replay_each(self, instance):
+        for line in self.engines[instance].param_lines():
+            try:
+                self.client.call(line, SLOW_TIMEOUT)
+            except plugin_hostd_error as e:
+                logging.error(f"plugin-hostd replay => {e}")
+
+    def bulk_ok(self):
+        """True when param_get_many and param_set_many are worth asking: the daemon answered hello, so it is of
+        protocol 0.3, and it has not refused them yet. An older daemon is never asked."""
+        return self.client.version is not None and self.bulk_verbs is not False
+
+    def bulk_refused(self, error):
+        """A bulk line was refused. A refusal of the whole verb (an invalid operation, no pair named) means the daemon
+        does not serve it, for the session; a refusal at a symbol or a pair is that line's own."""
+        if error.code == protocol.code("ERR_INVALID_OPERATION") and error.position is None:
+            self.bulk_verbs = False
 
     def add(self, engine, uri):
         """Add the plugin under the first free instance number and register the engine."""
@@ -993,15 +1066,36 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             daemon.remove(self.instance)
             self.instance = None
 
-    def replay_lines(self):
-        """What puts the instance back in a daemon that lost it: the add, the preset, every value."""
+    def replay_lines(self, bulk=False):
+        """What puts the instance back in a daemon that lost it: the add, the preset, every value. bulk: the values
+        of the parameters in one param_set_many line, for a daemon of protocol 0.3."""
         lines = [f"add {self.plugin_uri} {self.instance}"]
         if self.preset_key:
             lines.append(f"preset_load {self.instance} {self.preset_key}")
+        params = [z for z in self.zctrls.values() if z is not self.bypass_zctrl]
+        if bulk and params:
+            lines.append(f"param_set_many {self.instance} " + " ".join(f"{z.symbol} {z.value}" for z in params))
+            return lines + [self.value_line(z) for z in self.zctrls.values() if z is self.bypass_zctrl]
         return lines + [self.value_line(zctrl) for zctrl in self.zctrls.values()]
 
+    def param_lines(self):
+        """One param_set per parameter, the way every daemon takes them."""
+        return [self.value_line(z) for z in self.zctrls.values() if z is not self.bypass_zctrl]
+
     def read_values(self, symbols):
-        """{symbol: the daemon's text of its value, or None where it has none}, a param_get per symbol."""
+        """{symbol: the daemon's text of its value, or None where it has none}: one param_get_many for a daemon of
+        protocol 0.3, a param_get per symbol for any other, and for a bulk line that is refused or answers another
+        number of values (it is all or nothing, so one symbol it lacks refuses every one)."""
+        symbols = list(symbols)
+        if symbols and daemon.bulk_ok():
+            try:
+                values = daemon.call(f"param_get_many {self.instance} {' '.join(symbols)}")[1].split()
+                if len(values) == len(symbols):
+                    return dict(zip(symbols, values))
+            except plugin_hostd_error as e:
+                daemon.bulk_refused(e)
+            except FAILURES:
+                pass
         return {symbol: self.send_quiet(f"param_get {self.instance} {symbol}") for symbol in symbols}
 
     def send(self, line, timeout=TIMEOUT):

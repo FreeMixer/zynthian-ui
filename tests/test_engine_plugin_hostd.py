@@ -1363,5 +1363,211 @@ class test_catalogue(plugin_hostd_case):
         self.assertNotIn("PH/ZamComp", _lv2.engines_by_type["Audio Effect"], "the menus keep jalv")
 
 
+class test_protocol_03(plugin_hostd_case):
+    """Protocol 0.3 of plugin-hostd-protocol: hello with tags and error words, tagged requests matched by tag, the
+    bulk verbs. Each behaviour is driven against a daemon that speaks it and an old one that does not."""
+
+    NEW = dict(hello=True, bulk=True)
+
+    def big(self, **kw):
+        return self.serve(descriptors={"urn:test:big": os.path.join(FIXTURES, "big.descriptor.json")}, **kw)
+
+    def sent(self, fake, prefix):
+        return [line for line in fake.lines if line.startswith(prefix)]
+
+    # ---- hello ----
+
+    def test_hello_is_the_first_line_and_asks_for_tags_and_error_words(self):
+        fake = self.serve(**self.NEW)
+        self.add(self.chain(), "PH/Amp")
+        self.assertEqual(fake.wire[0], "hello 1 tags errors", "before any other line, and untagged")
+        self.assertEqual(sum(w.endswith("hello 1 tags errors") for w in fake.wire), 1, "once per connection")
+        self.assertEqual((ph.daemon.client.version, ph.daemon.client.granted), (1, ("tags", "errors")))
+
+    def test_a_daemon_that_answers_not_found_or_a_refusal_to_hello_is_worked_with_as_before(self):
+        for reply in ("not found", "resp -902"):
+            with self.subTest(reply=reply):
+                ph.daemon = ph.plugin_hostd_daemon(self.port)
+                fake = self.serve(hello_reply=reply)
+                chain = self.chain()
+                proc = self.add(chain, "PH/Amp")
+                proc.controllers_dict["gain"].set_value(3.0)
+                self.assertEqual(fake.params[1000]["gain"], 3.0)
+                self.assertIsNone(ph.daemon.client.version)
+                self.assertEqual(ph.daemon.client.granted, ())
+                self.assertFalse([w for w in fake.wire[1:] if w.startswith("@")], "no tag to a daemon that never granted them")
+                self.assertFalse([w for w in fake.wire if "_many" in w], "no bulk line to a daemon that never said hello")
+                self.remove(chain, proc)
+                ph.daemon.client.close()
+                fake.stop()
+                time.sleep(0.05)
+                self.port = ph.daemon.client.port = free_port()
+
+    # ---- tags ----
+
+    def test_every_request_after_hello_carries_its_own_tag(self):
+        fake = self.serve(**self.NEW)
+        proc = self.add(self.chain(), "PH/Amp")
+        proc.controllers_dict["gain"].set_value(2.0)
+        tagged = fake.wire[1:]
+        self.assertTrue(len(tagged) >= 3)
+        self.assertTrue(all(re.match(r"^@\S+ \S", w) for w in tagged), tagged)
+        tags = [w.split()[0] for w in tagged]
+        self.assertEqual(len(set(tags)), len(tags), "one tag per request")
+        self.assertEqual(fake.params[1000]["gain"], 2.0, "the reply of each was matched to its request")
+
+    def test_a_reply_of_another_tag_is_dropped_and_the_connection_kept(self):
+        fake = self.serve(stale_tags=True, **self.NEW)
+        client = ph.plugin_hostd_client(self.port)
+        client.call("add urn:test:amp 1000")
+        for _ in range(3):
+            self.assertEqual(client.call("param_get 1000 gain"), (0, "0.0000"))
+        self.assertTrue(fake.wire[-1].startswith("@"), "the requests were tagged, so the stale replies were sent")
+        self.assertEqual(fake.connections, 1, "a stale reply is no reason to reconnect")
+        self.assertIsNotNone(client.sock)
+
+    def test_the_engine_does_not_restore_over_a_stale_reply(self):
+        fake = self.serve(stale_tags=True, **self.NEW)
+        proc = self.add(self.chain(), "PH/Amp")
+        proc.controllers_dict["gain"].set_value(5.0)
+        fake.params[1000]["gain"] = 7.0
+        proc.engine.refresh_values()
+        self.assertEqual(proc.controllers_dict["gain"].value, 7.0)
+        self.assertTrue(fake.wire[-1].startswith("@"), "the requests were tagged, so the stale replies were sent")
+        self.assertEqual((fake.connections, len(self.sent(fake, "add"))), (1, 1))
+
+    # ---- error words ----
+
+    def test_an_error_name_is_the_error_word_the_daemon_sent(self):
+        self.serve(**self.NEW)
+        client = ph.plugin_hostd_client(self.port)
+        client.call("add urn:test:amp 1000")
+        with self.assertRaises(ph.plugin_hostd_error) as refused:
+            client.call("param_get 1000 nope")
+        self.assertEqual((refused.exception.code, refused.exception.name, refused.exception.word),
+                         (-103, "reply.host.param-symbol-invalid", "reply.host.param-symbol-invalid"))
+        self.assertIn("reply.host.param-symbol-invalid", str(refused.exception))
+
+    def test_an_old_daemon_has_its_error_names_from_the_protocol_files(self):
+        self.serve()
+        client = ph.plugin_hostd_client(self.port)
+        with self.assertRaises(ph.plugin_hostd_error) as refused:
+            client.call("chain_get 7")
+        self.assertEqual((refused.exception.name, refused.exception.word), ("PHD_ERR_NO_SUCH_CHAIN", None))
+
+    def test_a_refusal_with_a_position_keeps_the_position_and_no_word(self):
+        self.serve(**self.NEW)
+        client = ph.plugin_hostd_client(self.port)
+        client.call("add urn:test:amp 1000")
+        with self.assertRaises(ph.plugin_hostd_error) as refused:
+            client.call("param_set_many 1000 gain 1 nope 2")
+        self.assertEqual((refused.exception.code, refused.exception.position, refused.exception.word), (-103, 2, None))
+        self.assertEqual(refused.exception.name, "ERR_103" if ph.protocol.name(-103) == "ERR_103" else ph.protocol.name(-103))
+
+    # ---- bulk reads ----
+
+    def test_the_values_are_read_back_in_one_line(self):
+        fake = self.big(**self.NEW)
+        proc = self.add(self.chain(), "PH/Big")
+        self.assertEqual(self.sent(fake, "param_get "), [], "build_controllers asked for the values in bulk")
+        self.assertEqual(self.sent(fake, "param_get_many"), ["param_get_many 1000 " + " ".join(f"p{i}" for i in range(10))])
+        for i in range(10):
+            fake.params[1000][f"p{i}"] = float(i)
+        fake.lines.clear()
+        proc.engine.refresh_values()
+        self.assertEqual(self.sent(fake, "param_get "), [])
+        self.assertEqual(len(self.sent(fake, "param_get_many")), 1)
+        self.assertEqual([proc.controllers_dict[f"p{i}"].value for i in range(10)], [float(i) for i in range(10)])
+
+    def test_a_daemon_that_does_not_serve_the_bulk_verbs_is_read_one_by_one_and_asked_once(self):
+        fake = self.big(hello=True)
+        proc = self.add(self.chain(), "PH/Big")
+        fake.params[1000]["p3"] = 42.0
+        fake.lines.clear()
+        proc.engine.refresh_values()
+        self.assertEqual(len(self.sent(fake, "param_get ")), 10)
+        self.assertEqual(self.sent(fake, "param_get_many"), [], "refused once, for the session")
+        self.assertEqual(proc.controllers_dict["p3"].value, 42.0)
+
+    def test_a_bulk_read_the_daemon_refuses_falls_back_to_one_by_one(self):
+        fake = self.big(**self.NEW)
+        proc = self.add(self.chain(), "PH/Big")
+        fake.params[1000]["p1"] = 9.0
+        fake.lines.clear()
+        with mock.patch.object(fake, "verb_param_get_many", lambda *a: "resp -103"):
+            proc.engine.refresh_values()
+        self.assertEqual(len(self.sent(fake, "param_get ")), 10)
+        self.assertEqual(proc.controllers_dict["p1"].value, 9.0)
+
+    def test_an_old_daemon_is_read_one_by_one(self):
+        fake = self.big()
+        proc = self.add(self.chain(), "PH/Big")
+        self.assertEqual(len(self.sent(fake, "param_get ")), 10)
+        self.assertEqual(self.sent(fake, "param_get_many"), [])
+        fake.params[1000]["p2"] = 5.0
+        proc.engine.refresh_values()
+        self.assertEqual(proc.controllers_dict["p2"].value, 5.0)
+
+    # ---- bulk writes on replay ----
+
+    def start_new(self, bulk="1"):
+        ph.daemon.start_script = START_STUB
+        os.environ["FAKE_HOSTD_PROTOCOL"] = "0.3"
+        os.environ["FAKE_HOSTD_BULK"] = bulk
+
+    def killed_and_replayed(self, bulk="1"):
+        self.start_new(bulk)
+        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
+        chain = self.chain()
+        proc = self.add(chain, "PH/Amp")
+        proc.controllers_dict["gain"].set_value(4.5)
+        first = ph.daemon.pid
+        os.kill(first, signal.SIGKILL)
+        self.assertTrue(ph.daemon.wait_gone(5.0))
+        proc.controllers_dict["gain"].set_value(-2.0)  # the command that meets the dead daemon
+        second = str(ph.daemon.pid)
+        self.assertNotEqual(second, str(first))
+        return [line for pid, line in self.journal() if pid == second]
+
+    def test_a_restored_daemon_gets_the_values_in_one_line(self):
+        lines = self.killed_and_replayed()
+        many = lines.index("param_set_many 1000 gain -2.0")
+        self.assertLess(lines.index("add urn:test:amp 1000"), many)
+        self.assertNotIn("param_set 1000 gain -2.0", lines[:many + 1], "the replay sent no line of its own for the value")
+
+    def test_a_restored_daemon_that_serves_no_bulk_gets_one_line_per_value(self):
+        lines = self.killed_and_replayed(bulk="0")
+        self.assertIn("param_set_many 1000 gain -2.0", lines, "asked once, refused")
+        self.assertEqual(lines.count("param_set 1000 gain -2.0"), 2, "the replay's, and the command that met the dead daemon")
+
+    def test_replay_lines_group_the_values_of_a_bulk_daemon(self):
+        fake = self.big(**self.NEW)
+        engine = self.add(self.chain(), "PH/Big").engine
+        engine.zctrls["p2"].value = 2.5
+        lines = engine.replay_lines(bulk=True)
+        self.assertEqual(lines[0], "add urn:test:big 1000")
+        self.assertEqual(len(lines), 3, "add, the values, the bypass")
+        self.assertEqual(lines[2], "bypass 1000 0")
+        self.assertTrue(lines[1].startswith("param_set_many 1000 p0 "), lines[1])
+        self.assertIn(" p2 2.5", lines[1])
+        old = engine.replay_lines()
+        self.assertEqual(len(old), 12)
+        self.assertTrue(all(line.startswith("param_set 1000 p") for line in old[1:-1]))
+
+    def test_a_refused_bulk_write_is_put_back_value_by_value(self):
+        fake = self.big(**self.NEW)
+        proc = self.add(self.chain(), "PH/Big")
+        proc.controllers_dict["p4"].set_value(33.0)
+        fake.stop()
+        time.sleep(0.05)
+        fresh = self.serve(**self.NEW)
+        fresh.verb_param_set_many = lambda *a: "resp -103 3"
+        ph.daemon.restore()
+        sent = self.sent(fresh, "param_set ")
+        self.assertEqual(len(sent), 10)
+        self.assertIn("param_set 1000 p4 33.0", sent)
+        self.assertEqual(fresh.params[1000]["p4"], 33.0)
+
+
 if __name__ == "__main__":
     unittest.main()

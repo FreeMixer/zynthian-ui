@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 #
 # A stand-in for plugin-hostd on its command port (0.12 verbs; plan, plan_get and plan_clear of 0.13 on request): NUL-terminated lines, one reply each,
-# the replies and refusal codes its README documents. It runs in a thread of a test, or as a
+# the replies and refusal codes its README documents. Protocol 0.3 of plugin-hostd-protocol (hello with tags and
+# error words, param_get_many, param_set_many) on request: hello=True; without it the fake is an old daemon. It runs in a thread of a test, or as a
 # program started the way the engine starts the daemon: fake_plugin_hostd.py -n -p <port> [-c <conf>].
 # Every line it takes is appended to $FAKE_HOSTD_JOURNAL when that is set.
 #
@@ -38,7 +39,8 @@ PLUGINS = {
 class fake_plugin_hostd:
 
     def __init__(self, port, journal=None, descriptors=None, mod_host=False, planner=False, grouping=False,
-                 group_max=8, verdicts=None):
+                 group_max=8, verdicts=None, hello=False, bulk=False, stale_tags=False,
+                 hello_reply="resp -902"):
         self.port = port
         self.journal = journal
         self.descriptors = descriptors or {}
@@ -53,7 +55,13 @@ class fake_plugin_hostd:
         self.group_max = group_max
         self.verdicts = verdicts or {}  # uri => pin verdict word; none is "in-process"
         self.plans = {}  # chain => (segments, {instance: reason}) as the last plan answered it
+        self.hello = hello  # answer hello, protocol 0.3; else an old daemon, which answers hello_reply
+        self.hello_reply = hello_reply  # what an old daemon says to hello: not found, as mod-host does, or the refusal
+        self.bulk = bulk  # answer param_get_many and param_set_many; else -902 like a daemon that does not serve them
+        self.stale_tags = stale_tags  # send a reply of a tag nobody waits for before each tagged reply
+        self.granted = set()  # the extensions this connection was granted
         self.connections = 0
+        self.wire = []  # every line as it came, tag included
         self.lines = []
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -72,6 +80,7 @@ class fake_plugin_hostd:
                 return
             buf = b""
             self.connections += 1
+            self.granted = set()
             while self.running:
                 try:
                     chunk = self.conn.recv(4096)
@@ -83,7 +92,8 @@ class fake_plugin_hostd:
                 while b"\0" in buf:
                     line, _, buf = buf.partition(b"\0")
                     try:
-                        self.conn.sendall(self.handle(line.decode()).encode() + b"\0")
+                        for reply in self.answer(line.decode()):
+                            self.conn.sendall(reply.encode() + b"\0")
                     except OSError:
                         break
             self.conn.close()
@@ -105,6 +115,65 @@ class fake_plugin_hostd:
                 s.close()
 
     # ---------------------------------------------------------------------------
+
+    # The reply codes that carry a word in a session granted errors, the ones of plugin-hostd-protocol's reply_codes
+    WORDS = {-1: "reply.host.instance-invalid", -3: "reply.host.instance-non-exists",
+             -103: "reply.host.param-symbol-invalid", -511: "reply.host.no-param-contract",
+             -522: "reply.plugin-hostd.no-such-chain", -529: "reply.plugin-hostd.descriptor-absent",
+             -901: "reply.host.memory-allocation", -902: "reply.host.invalid-operation"}
+
+    def answer(self, wire):
+        """The lines sent back for one line of the wire: with tags granted the tag is taken off the request and put
+        on the reply; with errors granted a refusal that is a number alone is followed by its word."""
+        self.wire.append(wire)
+        tag = None
+        if "tags" in self.granted and wire.startswith("@"):
+            tag, _, wire = wire.partition(" ")
+        reply = self.handle(wire)
+        words = reply.split()
+        if "errors" in self.granted and len(words) == 2 and words[0] == "resp" and int(words[1]) in self.WORDS:
+            reply += " " + self.WORDS[int(words[1])]
+        if tag is None:
+            return [reply]
+        return ([f"@stale {reply}"] if self.stale_tags else []) + [f"{tag} {reply}"]
+
+    def verb_hello(self, version, *extensions):
+        if not self.hello:
+            return self.hello_reply
+        if not version.isdigit() or int(version) < 1:
+            return "resp -902"
+        self.granted = {e for e in extensions if e in ("tags", "errors", "seq")}
+        return "resp 0 1" + "".join(f" {e}" for e in ("tags", "errors", "seq") if e in self.granted)
+
+    def verb_param_get_many(self, instance, *symbols):
+        n = int(instance)
+        if not self.bulk or not symbols:
+            return "resp -902"
+        if n not in self.instances:
+            return "resp -3"
+        if any(s not in self.params[n] for s in symbols):
+            return "resp -103"
+        return "resp 0" + "".join(f" {self.params[n][s]:.4f}" for s in symbols)
+
+    def verb_param_set_many(self, instance, *pairs):
+        """All or nothing: every pair is checked before one is set, the first refused answers its position."""
+        n = int(instance)
+        if not self.bulk:
+            return "resp -902"
+        if n not in self.instances:
+            return "resp -3"
+        if not pairs or len(pairs) % 2:
+            return f"resp -902 {len(pairs) // 2 + 1}"
+        for position, (symbol, value) in enumerate(zip(pairs[::2], pairs[1::2]), 1):
+            if symbol not in self.params[n]:
+                return f"resp -103 {position}"
+            try:
+                float(value)
+            except ValueError:
+                return f"resp -902 {position}"
+        for symbol, value in zip(pairs[::2], pairs[1::2]):
+            self.params[n][symbol] = float(value)
+        return "resp 0"
 
     def handle(self, line):
         self.lines.append(line)
@@ -387,7 +456,9 @@ def main(argv):
     if os.environ.get("FAKE_HOSTD_DESCRIPTORS"):
         with open(os.environ["FAKE_HOSTD_DESCRIPTORS"]) as f:
             descriptors = json.load(f)
-    daemon = fake_plugin_hostd(port, os.environ.get("FAKE_HOSTD_JOURNAL"), descriptors)
+    new = os.environ.get("FAKE_HOSTD_PROTOCOL") == "0.3"  # a daemon of protocol 0.3, else an old one
+    daemon = fake_plugin_hostd(port, os.environ.get("FAKE_HOSTD_JOURNAL"), descriptors, hello=new,
+                               bulk=new and os.environ.get("FAKE_HOSTD_BULK", "1") == "1")
     time.sleep(float(os.environ.get("FAKE_HOSTD_READY_DELAY", "0")))  # listening, not yet ready
     print("plugin-hostd ready!", flush=True)
     daemon.serve()
