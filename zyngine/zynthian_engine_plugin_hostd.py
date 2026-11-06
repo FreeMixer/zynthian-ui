@@ -96,6 +96,7 @@ class plugin_hostd_error(Exception):
         self.word = word  # the error word of a session granted errors, reply.<group>.<reason>
         self.position = position  # the pair a bulk line was refused at, from 1
         self.name = word or protocol.name(code)  # the word when the daemon says it, else the protocol file's name
+        self.meaning = protocol.meaning(code)
         at = f" at {position}" if position else ""
         super().__init__(f"'{line}' => {self.name} ({code}){at}")
 

@@ -110,6 +110,12 @@ class engine_menu(unittest.TestCase):
         self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
                                         "Refused Amp (PH)  below bar · refused"])
         self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
+        self.screen.listbox.itemconfig.assert_not_called()
+
+    def test_a_plugin_that_does_not_load_is_listed_greyed(self):
+        self.engines["PH/Refused"].update(NOT_WORKING="does not load", NOT_WORKING_WHY="why (LV2_ADAPTER_REFUSED)")
+        self.assertEqual(self.build()[-1], "Refused Amp (PH)  not working · does not load")
+        self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#grey"})
 
     def test_a_jalv_row_the_user_lists_is_not_judged_by_plugin_hostds_pin(self):
         self.engines["JV/Refused"] = info("Refused Amp", "urn:q:refused", title="Refused Amp")
@@ -148,6 +154,19 @@ class engine_menu(unittest.TestCase):
             self.screen.get_engines_by_cat()
         self.screen.fill_list()
         self.assertEqual([row[2] for row in self.screen.filled], ["Linear EQ (PH)", "Fast Comp (PH)", "Refused Amp (PH)"])
+
+    def test_the_info_panel_says_why_a_plugin_does_not_work(self):
+        amp = {"NAME": "Refused Amp", "TYPE": "Audio Effect", "CAT": "Dynamics", "QUALITY": 0, "COMPLEX": 0,
+               "DESCR": "An amp", "FORMAT_LINE": "LV2, run by plugin-hostd", "NOT_WORKING": "refused",
+               "NOT_WORKING_WHY": "it failed qualification, so plugin-hostd does not load it (PIN_REFUSED)"}
+        self.assertEqual(self.screen.description_text(amp), "An amp\n\nLV2, run by plugin-hostd\n\n"
+                         "Not working: it failed qualification, so plugin-hostd does not load it (PIN_REFUSED)")
+        self.screen.engine_cats = []
+        self.screen.get_info = lambda code=None: amp
+        self.screen.show_details("PH/Refused")
+        html = self.screen.zyngui.screens['help'].set_html.call_args.args[0]
+        self.assertIn('<div class="not_working">Not working: it failed qualification, so plugin-hostd does not load it '
+                      '(PIN_REFUSED)</div>', html)
 
     def test_the_info_panel_shows_the_format_line_after_the_description(self):
         surge = {"NAME": "Surge XT", "TYPE": "MIDI Synth", "CAT": "Synth", "QUALITY": 0, "COMPLEX": 0,

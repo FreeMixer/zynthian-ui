@@ -253,10 +253,16 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.info_canvas.itemconfigure(self.description_label, text=self.description_text(eng_info))
 
     @staticmethod
+    def not_working_text(eng_info):
+        why = eng_info.get("NOT_WORKING_WHY") or eng_info.get("NOT_WORKING")
+        return f"Not working: {why}" if why else ""
+
+    @staticmethod
     def description_text(eng_info):
         """The description the info panel shows: the engine's, then the line naming a plugin's format, which the
-        menu titles leave out."""
-        return "\n\n".join(t for t in (eng_info.get("DESCR", ""), eng_info.get("FORMAT_LINE", "")) if t)
+        menu titles leave out, then why it does not work."""
+        return "\n\n".join(t for t in (eng_info.get("DESCR", ""), eng_info.get("FORMAT_LINE", ""),
+                                        zynthian_gui_engine.not_working_text(eng_info)) if t)
 
     def show_details(self, eng_code=None):
         eng_info = self.get_info(eng_code)
@@ -279,6 +285,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
   <div class="quality">Quality: <span class="stars">{"★" * eng_info["QUALITY"]}</span></div>
   <div class="complexity">Complexity: <span class="stars">{"⚙️" * eng_info["COMPLEX"]}</span></div>
   {f'<div class="format">{eng_info["FORMAT_LINE"]}</div>' if eng_info.get("FORMAT_LINE") else ""}
+  {f'<div class="not_working">{self.not_working_text(eng_info)}</div>' if self.not_working_text(eng_info) else ""}
   <p class="description">{description}</p>
  </body>
 </html>
@@ -308,8 +315,9 @@ class zynthian_gui_engine(zynthian_gui_selector):
         # self.engines_by_cat = sorted(self.engines_by_cat.items(), key=lambda kv: "!" if kv[0] is None else kv[0])
 
     def qualified_entries(self, engines_by_cat):
-        """{cat: [(engine, text)]}: the plugins tagged with their tier and their figures at the current
-        rate and quantum, in the chosen order. Plain titles in their own order if the qualification can't be read."""
+        """{cat: [(engine, text, greyed)]}: the plugins tagged with their tier and their figures at the current
+        rate and quantum, in the chosen order, the hidden ones dropped or greyed. Plain titles in their own
+        order if the qualification can't be read."""
         try:
             rate = self.zyngui.state_manager.get_jackd_samplerate()
             quantum = self.zyngui.state_manager.get_jackd_blocksize()
@@ -323,7 +331,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
                     for cat, engines in engines_by_cat.items()}
         except Exception as e:
             logging.error(f"Can't read the plugin qualification => {e}")
-            return {cat: [(eng, info["TITLE"]) for eng, info in engines.items()]
+            return {cat: [(eng, info["TITLE"], False) for eng, info in engines.items()]
                     for cat, engines in engines_by_cat.items()}
 
     def recall_context_index(self):
@@ -355,13 +363,16 @@ class zynthian_gui_engine(zynthian_gui_selector):
         if self.proc_type in ("MIDI Tool", "Audio Effect"):
             self.list_data.append(("None", 0, "None", "None"))
 
+        greyed = []
         if self.engine_cats:
             # Fill engine list
             cat = self.engine_cats[self.cat_index]
             engines_info = self.engines_by_cat[cat]
-            for eng, text in self.menu_entries[cat]:
+            for eng, text, grey in self.menu_entries[cat]:
                 i = len(self.list_data)
                 info = engines_info[eng]
+                if grey:
+                    greyed.append(i)
                 if self.show_all:
                     if info["ENABLED"]:
                         self.list_data.append((eng, i, "\u2612 " + text, info["NAME"]))
@@ -380,6 +391,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
             self.engine_info_dirty = False
 
         super().fill_list()
+        for i in greyed:
+            self.listbox.itemconfig(i, {'fg': zynthian_gui_config.color_tx_off})
 
     def select(self, index=None, set_zctrl=True):
         super().select(index, set_zctrl)

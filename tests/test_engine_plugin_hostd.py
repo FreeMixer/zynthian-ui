@@ -1354,13 +1354,12 @@ class test_catalogue(plugin_hostd_case):
         self.assertIs(_lv2.engines_by_type["MIDI Synth"]["PH/clap:/usr/lib/clap/test.clap#org.test.synth"], synth)
         self.assertTrue(set(added) <= set(engines))
 
-    def test_without_the_daemon_installed_the_entries_are_known_and_not_listed(self):
-        with self.assertLogs(level=logging.WARNING):
-            added = cat.add_catalogue({"JV/ZamComp": lv2_info("ZamComp", "urn:zamaudio:ZamComp")},
-                                      clap=cat.parse_clap_scan(CLAP_SCAN), binary=os.path.join(self.tmp, "absent"))
+    def test_without_the_daemon_installed_the_entries_are_listed_saying_so(self):
+        added = cat.add_catalogue({"JV/ZamComp": lv2_info("ZamComp", "urn:zamaudio:ZamComp")},
+                                  clap=cat.parse_clap_scan(CLAP_SCAN), binary=os.path.join(self.tmp, "absent"))
         self.assertTrue(added)
-        self.assertIn("PH/ZamComp", added)
-        self.assertNotIn("PH/ZamComp", _lv2.engines_by_type["Audio Effect"], "the menus keep jalv")
+        self.assertEqual({info["NOT_WORKING"] for info in added.values()}, {"not installed"})
+        self.assertEqual({info["NOT_WORKING_WHY"] for info in added.values()}, {cat.NOT_INSTALLED_WHY})
 
 
 class test_protocol_03(plugin_hostd_case):

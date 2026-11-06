@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 #
-# An add the engine refuses (plugin-hostd answering -509 PIN_BINARY_MISMATCH, say) leaves no processor in the chain
-# and no busy client behind; a snapshot restore that meets one drops that processor and finishes. The chain manager's
-# own add_processor and set_state, on a real chain.
+# An add the engine refuses (plugin-hostd answering -509 PIN_BINARY_MISMATCH, say) leaves no processor in the chain,
+# no busy client behind and the refusal's meaning to show; a snapshot restore that meets one drops that processor,
+# finishes, and says what it left out. The chain manager's own add_processor and set_state, on a real chain.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -111,6 +111,7 @@ class refused_add(unittest.TestCase):
         man.processors = {}
         man.zyngines = {}
         man.zyngine_counter = 0
+        man.add_refusal = None
         info = {"TYPE": "MIDI Synth", "CAT": "Piano", "ENABLED": True, "INDEX": 0, "URL": "", "UI": False}
         man.engine_info = {"PH/Piano": dict(info, NAME="Piano", ENGINE=refusing_engine),
                            "PH/Ok": dict(info, NAME="Ok", TYPE="Audio Effect", ENGINE=accepting_engine)}
@@ -132,15 +133,45 @@ class refused_add(unittest.TestCase):
         self.man.add_processor(1, "PH/Piano", proc_id=1000)
         self.assertFalse(self.man.state_manager.is_busy(), self.man.state_manager.busy)
 
-    def test_an_add_after_a_refused_one_is_taken(self):
+    def test_the_refusal_says_the_daemons_word_and_what_it_means(self):
+        self.man.add_processor(1, "PH/Piano", proc_id=1000)
+        self.assertEqual(self.man.add_refusal, "Piano: a pinned file is missing or its SHA-256 differs, or the plugin's "
+                         "manifest names a file the pin does not hold (PIN_BINARY_MISMATCH)")
+
+    def test_a_refused_plugin_is_marked_not_working_and_adding_it_again_asks_no_engine(self):
+        self.man.add_processor(1, "PH/Piano", proc_id=1000)
+        refusal = self.man.add_refusal
+        info = self.man.engine_info["PH/Piano"]
+        self.assertEqual(info["NOT_WORKING"], "does not load")
+        self.assertEqual("Piano: " + info["NOT_WORKING_WHY"], refusal)
+        info["ENGINE"] = accepting_engine  # an engine that would take it: it is never asked
+        self.assertIsNone(self.man.add_processor(1, "PH/Piano", proc_id=1001))
+        self.assertEqual(self.man.add_refusal, refusal, "the same reason")
+        self.assertEqual(self.chain.get_processors(), [])
+        self.assertEqual(self.man.zyngines, {})
+        self.assertFalse(self.man.state_manager.is_busy(), self.man.state_manager.busy)
+
+    def test_an_entry_the_catalogue_marks_not_working_is_not_added_and_says_why(self):
+        self.man.engine_info["PH/Ok"].update(NOT_WORKING="not installed",
+                                             NOT_WORKING_WHY="plugin-hostd is not installed, so it cannot run this plugin")
+        self.assertIsNone(self.man.add_processor(1, "PH/Ok", proc_id=1001))
+        self.assertEqual(self.man.add_refusal, "Ok: plugin-hostd is not installed, so it cannot run this plugin")
+        self.assertEqual(self.chain.get_processors(), [])
+
+    def test_an_accepted_add_has_no_refusal(self):
         self.man.add_processor(1, "PH/Piano", proc_id=1000)
         self.assertIsNotNone(self.man.add_processor(1, "PH/Ok", proc_id=1001))
+        self.assertIsNone(self.man.add_refusal)
 
-    def test_a_restore_drops_the_refused_processor_and_finishes(self):
+    def test_a_restore_drops_the_refused_processor_finishes_and_says_so(self):
         state = {1: {"slots": [{"1000": "PH/Piano"}, {"1001": "PH/Ok"}]}}
-        self.man.set_state(state, {}, merge=False)
+        with mock.patch.object(cm.zynsigman, "send_queued") as send:
+            self.man.set_state(state, {}, merge=False)
         self.assertFalse(self.man.state_manager.is_busy(), self.man.state_manager.busy)
         self.assertEqual([p.id for p in self.chain.get_processors()], [1001])
+        messages = [c.kwargs.get("message") for c in send.call_args_list if c.kwargs.get("message")]
+        self.assertEqual(len(messages), 1, send.call_args_list)
+        self.assertIn("Piano: a pinned file is missing or its SHA-256 differs", messages[0])
 
 
 if __name__ == "__main__":

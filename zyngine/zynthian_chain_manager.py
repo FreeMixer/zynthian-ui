@@ -35,7 +35,7 @@ from zyngine import zynthian_lv2
 from zyngine.zynthian_chain import *
 from zyngine.zynthian_engine_jalv import *
 from zyngine.zynthian_engine_pianoteq import *
-from zyngine.zynthian_plugin_hostd_catalogue import add_catalogue as plugin_hostd_catalogue
+from zyngine.zynthian_plugin_hostd_catalogue import add_catalogue as plugin_hostd_catalogue, refusal_text
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine.zynthian_processor import zynthian_processor
 from zyngine.zynthian_controller import zynthian_controller
@@ -94,6 +94,10 @@ engine2class = {
 # ----------------------------------------------------------------------------
 
 
+# plugin-hostd refusals that say nothing of the plugin: the next add may be taken
+TRANSIENT_REFUSALS = ("WORKER_SPAWN", "GAVE_UP", "VERB_DROPPED")
+
+
 class zynthian_chain_manager:
 
     engine_info = None
@@ -117,6 +121,7 @@ class zynthian_chain_manager:
         self.zyngine_counter = 0  # Appended to engine names for uniqueness
         self.zyngines = {}  # Map of instantiated engines, indexed by engine code
         self.processors = {}  # Dictionary of processor objects indexed by UID
+        self.add_refusal = None  # why the engine refused the last add_processor, None when it did not
         self.active_chain = None  # Active chain object => This should NEVER be None!!!
         self.active_midi_chain = None # Chain currently receiving active MIDI input
         self._pinned_chains = 1 # Quantity of pinned chains (shown pinned to right edge of mixer in UI)
@@ -1066,9 +1071,10 @@ class zynthian_chain_manager:
         proc_id : Processor UID (Default: Use next available ID)
         eng_config: Extended configuration for the engine (optional)
         midi_autolearn: True to auto-learn MIDI-CC based controllers (i.e. False when creating from state)
-        Returns : processor object or None on failure
+        Returns : processor object or None on failure; add_refusal says why when the engine refused it
         """
 
+        self.add_refusal = None
         if chain_id is not None and chain_id not in self.chains:
             logging.error(f"Chain '{chain_id}' doesn't exist!")
             return None
@@ -1076,6 +1082,11 @@ class zynthian_chain_manager:
         if eng_code not in self.engine_info:
             if eng_code != 'None':
                 logging.error(f"Engine '{eng_code}' not found!")
+            return None
+        if self.engine_info[eng_code].get("NOT_WORKING"):
+            # It does not load (plugin-hostd is not installed, or it refused this plugin's add): say why, add nothing
+            info = self.engine_info[eng_code]
+            self.add_refusal = f"{info.get('NAME') or eng_code}: {info.get('NOT_WORKING_WHY') or info['NOT_WORKING']}"
             return None
         if proc_id is None:
             proc_id = self.get_available_processor_id()
@@ -1106,8 +1117,17 @@ class zynthian_chain_manager:
         try:
             engine = self.start_engine(processor, eng_code, eng_config)
         except Exception as e:
-            # The engine refused the processor (plugin-hostd's add answered an error): undo the insert
+            # The engine refused the processor (plugin-hostd's add answered an error): say why, and undo the insert
             processor.engine = None  # the engine never took it
+            info = self.engine_info[eng_code]
+            if getattr(e, "code", None) is not None:
+                why = refusal_text(getattr(e, "name", None), getattr(e, "meaning", None))
+                if (getattr(e, "name", "") or "").removeprefix("PHD_ERR_") not in TRANSIENT_REFUSALS:
+                    # it does not load: the menu lists it as not working, with this cause, until the catalogue is made again
+                    info.update(NOT_WORKING="does not load", NOT_WORKING_WHY=why)
+            else:
+                why = str(e)
+            self.add_refusal = f"{info.get('NAME') or eng_code}: {why}"
             logging.error(f"Can't add processor '{eng_code}' to chain {chain_id}: {e}")
             engine = None
         if not engine:
@@ -1576,6 +1596,7 @@ class zynthian_chain_manager:
         """
 
         self.state_manager.start_busy("set_chain_state", None, "loading chains")
+        dropped = []  # the refusals of the processors this restore could not add, which it leaves out
 
 
         if not merge:
@@ -1605,11 +1626,17 @@ class zynthian_chain_manager:
                         processor = self.add_processor(chain_id, eng_code, slot, proc_id=int(proc_id), eng_config=eng_config, midi_autolearn=False)
                         if processor:
                             slot = self.chains[chain_id].get_slot(processor)
+                        elif self.add_refusal:
+                            dropped.append(self.add_refusal)
                     slot += 1
             if "zctrls" in chain_state:
                 self.chains[chain_id].set_zctrls_state(chain_state["zctrls"])
         self.rebuild_optimisation_cache()
         self.state_manager.end_busy("set_chain_state")
+        if dropped:
+            logging.error("The snapshot was loaded without: " + "; ".join(dropped))
+            zynsigman.send_queued(zynsigman.S_GUI, zynsigman.SS_GUI_SHOW_MESSAGE,
+                                  message="Not loaded: " + "; ".join(dropped), timeout=8)
 
     def restore_presets(self):
         """Restore presets in active chain"""

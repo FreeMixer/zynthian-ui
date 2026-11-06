@@ -33,15 +33,16 @@
 # plugin between tiers.
 #
 # The plugins below the bar are listed after the others, with their mark. A plugin-hostd pin judges plugin-hostd's
-# rows only: a jalv row (JV/) is placed without it.
+# rows only: a jalv row (JV/) is placed without it. An entry the catalogue or a refused add marked NOT_WORKING (it does not load at all) is listed last,
+# greyed, with its word; the detail panel says why.
 #
 # A menu is ordered by tier (live, studio, the rest) or by one figure: name, cost, latency or RT safety,
 # by the value shown, a figure the record does not hold after the ones it does. In every order the rows
 # with figures come first, then the ones without (not qualified, entries that are not plugins), then the
-# ones below the bar. hosted_only keeps the rows plugin-hostd runs (PH/).
+# ones below the bar, then the ones that do not work. hosted_only keeps the rows plugin-hostd runs (PH/).
 #
 # A plugin installed both as CLAP and as LV2 is one row, never two: formats are invisible to the user. A CLAP row and an
-# LV2 row of one name are one plugin, and the one placed worse gives way: by tier
+# LV2 row of one name are one plugin, and the one placed worse gives way: working before not working, then by tier
 # (live, studio, not qualified, below the bar), then CLAP before LV2 (omx-clap-host's own format), then plugin-hostd
 # before jalv. Rows of one format stay as they are: two plugins that share a name, and an LV2 plugin's jalv row beside
 # its plugin-hostd one, which is a choice of engine and not of format.
@@ -58,7 +59,7 @@ import logging
 from collections import namedtuple
 
 LIVE_MAX_MS = 5.0
-RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "below": 3}  # entries that are not plugins rank as unverified
+RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "below": 3, "not working": 4}  # entries that are not plugins rank as unverified
 SEP = " · "
 ORDERS = ("tier", "name", "cost", "latency", "rt")
 RT_WORDS = {True: "RT-ok", False: "RT-alone", None: "RT-?"}
@@ -131,26 +132,27 @@ def format_rank(key):
 
 
 def one_row_per_plugin(rows):
-    """rows as menu_entries builds them, (rank, n, key, text, figure, identity), with each plugin's rows reduced to
-    the best placed: by rank, then by format_rank, then in their own order. A row gives way only to a better one of
-    the same name in the other format."""
-    order = lambda r: (r[0], format_rank(r[2]), r[1])
+    """rows as menu_entries builds them, (rank, n, key, text, greyed, figure, identity), with each plugin's rows
+    reduced to the best placed: working before not working, then by rank, then by format_rank, then in their own order. A row
+    gives way only to a better one of the same name in the other format."""
+    order = lambda r: (r[4], r[0], format_rank(r[2]), r[1])
     by_name = {}
     for row in rows:
-        if row[5] is not None and row[5][0] is not None:
-            by_name.setdefault(row[5][0], []).append(row)
+        if row[6] is not None and row[6][0] is not None:
+            by_name.setdefault(row[6][0], []).append(row)
     dropped = set()
     for group in by_name.values():
         for row in group:
-            if any(order(other) < order(row) and other[5][1] != row[5][1] for other in group):
+            if any(order(other) < order(row) and other[6][1] != row[6][1] for other in group):
                 dropped.add(id(row))
     return [row for row in rows if id(row) not in dropped]
 
 
 def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, order="tier", hosted_only=False):
-    """[(key, text)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
+    """[(key, text, greyed)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
     first, then studio, then the rest in their own order; or by name or by a figure, the rows with
-    figures first, then the rest. Then the plugins below the bar, with their mark. hosted_only keeps the PH rows.
+    figures first, then the rest. Then the plugins below the bar, with their mark, then the entries that do not
+    load at all, greyed. hosted_only keeps the PH rows.
     A plugin present in more than one format is one row, the best placed (one_row_per_plugin).
     facts_of(url) gives a plugin's Facts; entries that are not plugins keep their title."""
     rows = []
@@ -159,18 +161,22 @@ def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, order="tier", hosted_on
             continue
         title = info["TITLE"]
         if not is_plugin(key):
-            rows.append((RANK[None], n, key, title, None, None))
+            rows.append((RANK[None], n, key, title, False, None, None))
+            continue
+        ident = plugin_identity(key, info)
+        if info.get("NOT_WORKING"):
+            rows.append((RANK["not working"], n, key, f"{title}  not working{SEP}{info['NOT_WORKING']}", True, None, ident))
             continue
         facts = facts_of(info.get("URL", ""))
         if not key.startswith("PH/"):
             facts = facts._replace(pin=None)  # plugin-hostd's pin does not judge jalv
         p = place(facts, live_ms)
-        rows.append((RANK[p.tier], n, key, f"{title}  {p.tag}",
-                     figure(facts, order) if p.tier not in ("unverified", "below") else None, plugin_identity(key, info)))
+        rows.append((RANK[p.tier], n, key, f"{title}  {p.tag}", False,
+                     figure(facts, order) if p.tier not in ("unverified", "below") else None, ident))
     rows = one_row_per_plugin(rows)
     if order == "tier":
         rows.sort(key=lambda r: r[:2])
     else:
         # live and studio are one group: the figure orders them
-        rows.sort(key=lambda r: (max(r[0], RANK["studio"]), r[4] is None, r[4] or 0, r[3].lower(), r[1]))
-    return [(key, text) for _, _, key, text, _, _ in rows]
+        rows.sort(key=lambda r: (max(r[0], RANK["studio"]), r[5] is None, r[5] or 0, r[3].lower(), r[1]))
+    return [(key, text, greyed) for _, _, key, text, greyed, _, _ in rows]

@@ -299,12 +299,12 @@ class pi5_records(unittest.TestCase):
                    ((CLAP_EQ, "3 Band EQ (PH)"), (CLAP_SPLIT, "3 Band Splitter (PH)"), (CLAP_DELAY, "Art Delay (PH)"),
                     (LV2_DELAY, "Art Delay LV2 (PH)"), ("clap:/usr/lib/clap/none.clap#x", "None (PH)"))}
         rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000))
-        self.assertEqual([text for _, text in rows],
-                         ["Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked",
-                          "Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked",
-                          "None (PH)  not qualified",
-                          "3 Band EQ (PH)  below bar · refused",
-                          "3 Band Splitter (PH)  below bar · refused"])
+        self.assertEqual([(text, grey) for _, text, grey in rows],
+                         [("Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked", False),
+                          ("Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked", False),
+                          ("None (PH)  not qualified", False),
+                          ("3 Band EQ (PH)  below bar · refused", False),
+                          ("3 Band Splitter (PH)  below bar · refused", False)])
 
     def test_a_refused_plugin_is_listed_marked_and_last_never_handed_to_its_jalv_row(self):
         engines = {"JV/Refused": {"TITLE": "Refused", "URL": "urn:r"}, "PH/Refused": {"TITLE": "Refused (PH)", "URL": "urn:r"},
@@ -312,9 +312,18 @@ class pi5_records(unittest.TestCase):
         facts = {"urn:r": NO_FACTS._replace(pin="refused"), "urn:f": measured(1.0, rt=True, soaked=True, frames=48)}
         rows = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS))
         # the jalv row is there only when the user lists jalv: plugin-hostd's pin does not judge it
-        self.assertEqual([text for _, text in rows],
-                         ["Fast (PH)  live 48fr RT-ok cost?", "Refused  not qualified",
-                          "ZynAddSubFX", "Refused (PH)  below bar · refused"])
+        self.assertEqual([(text, grey) for _, text, grey in rows],
+                         [("Fast (PH)  live 48fr RT-ok cost?", False), ("Refused  not qualified", False),
+                          ("ZynAddSubFX", False), ("Refused (PH)  below bar · refused", False)])
+
+    def test_an_entry_the_catalogue_marks_not_working_is_listed_greyed_with_its_word(self):
+        engines = {"PH/A": {"TITLE": "A (PH)", "URL": "urn:a", "NOT_WORKING": "not installed"},
+                   "PH/F": {"TITLE": "F (PH)", "URL": "urn:f"}}
+        facts = {"urn:a": measured(1.0, rt=True, soaked=True, frames=48),
+                 "urn:f": measured(1.0, rt=True, soaked=True, frames=48)}
+        rows = tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), hosted_only=True)
+        self.assertEqual([(text, grey) for _, text, grey in rows],
+                         [("F (PH)  live 48fr RT-ok cost?", False), ("A (PH)  not working · not installed", True)])
 
 
 class one_row_per_plugin(unittest.TestCase):
@@ -333,15 +342,15 @@ class one_row_per_plugin(unittest.TestCase):
                    "PH/" + self.KARS_CLAP: {"NAME": "Kars", "TITLE": "Kars (PH)", "URL": self.KARS_CLAP}}
         live = measured(0.0, rt=True, soaked=True, frames=0, declared=0)
         rows = self.rows(engines, {self.KARS_LV2: live, self.KARS_CLAP: live})
-        self.assertEqual([key for key, _ in rows], ["PH/" + self.KARS_CLAP])
+        self.assertEqual([key for key, _, _ in rows], ["PH/" + self.KARS_CLAP])
 
     def test_the_better_placed_format_wins_whichever_it_is(self):
         engines = {"PH/" + self.SURGE_LV2: {"NAME": "Surge XT", "TITLE": "Surge XT (PH)", "URL": self.SURGE_LV2},
                    "PH/" + self.SURGE_CLAP: {"NAME": "Surge XT", "TITLE": "Surge XT (PH)", "URL": self.SURGE_CLAP}}
         studio = measured(0.7, rt=False, soaked=True, frames=34, declared=0, pin="isolated")
-        self.assertEqual([text for _, text in self.rows(engines, {self.SURGE_CLAP: studio})],
+        self.assertEqual([text for _, text, _ in self.rows(engines, {self.SURGE_CLAP: studio})],
                          ["Surge XT (PH)  studio 34/0fr RT-alone cost?"], "the LV2 row, not qualified, gives way")
-        self.assertEqual([key for key, _ in self.rows(engines, {self.SURGE_LV2: studio})], ["PH/" + self.SURGE_LV2])
+        self.assertEqual([key for key, _, _ in self.rows(engines, {self.SURGE_LV2: studio})], ["PH/" + self.SURGE_LV2])
 
     def test_a_jalv_row_plugin_hostd_refuses_is_not_judged_by_that_pin_and_gives_way_to_a_better_row(self):
         engines = {"JV/Obxd": {"NAME": "Obxd", "TITLE": "Obxd", "URL": "https://obxd.wordpress.com"},
@@ -349,19 +358,19 @@ class one_row_per_plugin(unittest.TestCase):
                                                               "URL": "clap:/usr/lib/clap/OB-Xd.clap#obxd"}}
         facts = {"https://obxd.wordpress.com": NO_FACTS._replace(pin="refused"),
                  "clap:/usr/lib/clap/OB-Xd.clap#obxd": measured(0.7, rt=False, soaked=True, frames=34, pin="isolated")}
-        self.assertEqual([key for key, _ in self.rows(engines, facts)], ["PH/clap:/usr/lib/clap/OB-Xd.clap#obxd"])
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts)], ["PH/clap:/usr/lib/clap/OB-Xd.clap#obxd"])
 
     def test_an_lv2_plugins_jalv_row_beside_its_plugin_hostd_row_is_a_choice_of_engine_and_stays(self):
         engines = {"PH/urn:a": {"NAME": "Amp", "TITLE": "Amp (PH)", "URL": "urn:a"},
                    "JV/urn:a": {"NAME": "Amp", "TITLE": "Amp", "URL": "urn:a"}}
         facts = {"urn:a": measured(1.0, rt=True, soaked=True, frames=48)}
-        self.assertEqual([key for key, _ in self.rows(engines, facts)], ["PH/urn:a", "JV/urn:a"])
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts)], ["PH/urn:a", "JV/urn:a"])
 
     def test_two_plugins_of_one_format_that_share_a_name_stay_two_rows(self):
         engines = {"PH/urn:a": {"NAME": "Reverb", "TITLE": "Reverb (PH)", "URL": "urn:a"},
                    "PH/urn:b": {"NAME": "Reverb", "TITLE": "Reverb (PH)", "URL": "urn:b"}}
         facts = {"urn:a": measured(1.0, rt=True, soaked=True, frames=48)}
-        self.assertEqual([key for key, _ in self.rows(engines, facts)], ["PH/urn:a", "PH/urn:b"])
+        self.assertEqual([key for key, _, _ in self.rows(engines, facts)], ["PH/urn:a", "PH/urn:b"])
 
 
 class record_reading(unittest.TestCase):
@@ -450,22 +459,22 @@ class menu_order(unittest.TestCase):
 
     def test_live_first_then_studio_then_the_rest_then_the_ones_below_the_bar_marked(self):
         self.assertEqual(self.entries(), [
-            ("PH/Fast", "Fast Comp (PH)  live 0fr RT-ok cost?"),
-            ("PH/Unsoaked", "New Gate (PH)  live 64fr RT-ok cost? unsoaked"),
-            ("JV/Fast", "Fast Comp  live 0fr RT-ok cost?"),
-            ("PH/Slow", "Linear EQ (PH)  studio 1024fr RT-ok cost?"),
-            ("PH/Alloc", "Alloc Verb (PH)  studio 0fr RT-alone cost?"),
-            ("PH/None", "Untested Chorus (PH)  not qualified"),
-            ("AP", "Audio Player"),
-            ("PH/Crashed", "Crashy Delay (PH)  below bar · crashed"),
-            ("PH/Refused", "Refused Amp (PH)  below bar · refused"),
-            ("PH/Hung", "Stuck Pitch (PH)  below bar · hung"),
+            ("PH/Fast", "Fast Comp (PH)  live 0fr RT-ok cost?", False),
+            ("PH/Unsoaked", "New Gate (PH)  live 64fr RT-ok cost? unsoaked", False),
+            ("JV/Fast", "Fast Comp  live 0fr RT-ok cost?", False),
+            ("PH/Slow", "Linear EQ (PH)  studio 1024fr RT-ok cost?", False),
+            ("PH/Alloc", "Alloc Verb (PH)  studio 0fr RT-alone cost?", False),
+            ("PH/None", "Untested Chorus (PH)  not qualified", False),
+            ("AP", "Audio Player", False),
+            ("PH/Crashed", "Crashy Delay (PH)  below bar · crashed", False),
+            ("PH/Refused", "Refused Amp (PH)  below bar · refused", False),
+            ("PH/Hung", "Stuck Pitch (PH)  below bar · hung", False),
         ])
 
     def test_without_any_record_the_order_is_the_engine_configs(self):
         q = qual.qualification(os.path.join(RECORDS, "absent"), []).refresh()
         entries = tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000), 5.0)
-        self.assertEqual([key for key, _ in entries], list(CATALOGUE))
+        self.assertEqual([key for key, _, _ in entries], list(CATALOGUE))
 
 
 if __name__ == "__main__":

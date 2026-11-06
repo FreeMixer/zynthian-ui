@@ -118,6 +118,20 @@ def jalv_twin(key):
     return None if key.startswith("PH/clap:") or not key.startswith("PH/") else "JV/" + key[3:]
 
 
+NOT_INSTALLED_WHY = "plugin-hostd is not installed, so it cannot run this plugin"
+
+
+def short_meaning(meaning):
+    """The first clause of a protocol meaning: what the code says, without how the daemon goes on."""
+    return (meaning or "").split(": ")[0].strip()
+
+
+def refusal_text(word, meaning=None):
+    """Why plugin-hostd did not load a plugin: what the code means, then the daemon's word for it (PHD_ERR_ left out)."""
+    word = (word or "").removeprefix("PHD_ERR_")
+    return f"{short_meaning(meaning) or 'plugin-hostd refused it'} ({word})"
+
+
 def plugin_name(info):
     """A plugin's name, case and spacing aside, as the menus match a CLAP row and an LV2 row of one plugin."""
     return " ".join((info.get("NAME") or "").casefold().split()) or None
@@ -145,7 +159,8 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     then the menus list the PH entry and not its jalv one. The jalv entry stays in engines, and the PH ones
     always are, so a chain saved with either loads as it was saved whatever the setting. Every plugin is listed,
     whatever its qualification found (the menus mark the ones below the bar): no plugin is moved to jalv. When
-    plugin-hostd is not installed, the menus keep offering jalv."""
+    plugin-hostd is not installed, every PH entry is marked NOT_WORKING, with why in NOT_WORKING_WHY, so the menu
+    says so."""
     available = shutil.which(binary) is not None
     try:
         from zyngine import zynthian_lv2
@@ -158,7 +173,7 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     added = {}
     for key, info in list(engines.items()):
         if key.startswith("JV/") and info.get("TYPE") in ENGINE_TYPES:
-            entry = {k: v for k, v in info.items() if k != "ENGINE"}
+            entry = {k: v for k, v in info.items() if k not in ("ENGINE", "NOT_WORKING", "NOT_WORKING_WHY")}
             entry.update({"ID": f"ph{info.get('ID', '')}", "TITLE": f"{info['TITLE']} (PH)", "FORMAT": "LV2",
                           "ENABLED": bool(info.get("ENABLED"))})
             added["PH/" + key[3:]] = entry
@@ -179,12 +194,15 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
                       "DESCR": f"Plugin by {plugin['vendor']}",
                       "QUALITY": 0, "COMPLEX": 0, "EDIT": 0}
     add_format_lines(added)
+    if not available:
+        for info in added.values():
+            info.update(NOT_WORKING="not installed", NOT_WORKING_WHY=NOT_INSTALLED_WHY)
     engines.update(added)
     if plugin_engine() != "plugin-hostd":
         return added
     if not available:
-        logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: the menus offer jalv")
-        return added
+        logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: "
+                        "the menus list its plugins as not working until it is")
     for key, info in added.items():
         if info["TYPE"] in by_type:
             by_type[info["TYPE"]][key] = info

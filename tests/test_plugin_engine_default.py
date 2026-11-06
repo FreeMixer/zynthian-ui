@@ -95,11 +95,15 @@ class plugin_engine_case(unittest.TestCase):
         self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
         self.assertIn("ZYNTHIAN_PLUGIN_ENGINE=carla", logs.output[0])
 
-    def test_without_plugin_hostd_installed_the_menus_keep_jalv(self):
+    def test_without_plugin_hostd_installed_the_menu_says_so_and_offers_no_jalv_in_its_place(self):
         with self.assertLogs(level=logging.WARNING) as logs:
             self.catalogue(binary=os.path.join(os.path.dirname(self.binary), "absent"))
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"], "jalv is never chosen for the user")
+        self.assertEqual(self.engines["PH/ZamComp"]["NOT_WORKING"], "not installed")
+        self.assertIn("plugin-hostd is not installed", self.engines["PH/ZamComp"]["NOT_WORKING_WHY"])
+        self.assertTrue(self.engines["PH/ZamComp"]["ENABLED"], "listed, so the menu can say why it does not work")
         self.assertIn("not installed", logs.output[0])
+        self.assertNotIn("jalv", logs.output[0])
 
     def test_midi_tools_stay_with_jalv(self):
         self.catalogue()

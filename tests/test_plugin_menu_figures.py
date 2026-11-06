@@ -66,16 +66,16 @@ class menu_figures(unittest.TestCase):
         return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, rate, quantum), 5.0, order, hosted_only)
 
     def keys(self, order, hosted_only=False):
-        return [key for key, _ in self.entries(order, hosted_only)]
+        return [key for key, _, _ in self.entries(order, hosted_only)]
 
     def test_each_row_shows_the_figures_of_its_record(self):
-        self.assertEqual({key: text for key, text in self.entries()}, ROWS)
+        self.assertEqual({key: text for key, text, _ in self.entries()}, ROWS)
 
     def test_the_cost_is_the_one_measured_at_the_current_quantum(self):
-        rows = dict((key, text) for key, text in self.entries(quantum=512))
+        rows = dict((key, text) for key, text, _ in self.entries(quantum=512))
         self.assertEqual(rows["PH/" + CLEAN], "Clean Comp (PH)  live 0/0fr RT-ok 61ns")
         self.assertTrue(rows["PH/Locky"].endswith("RT-alone cost?"), "no other quantum stands in")
-        rows = dict((key, text) for key, text in self.entries(rate=96000))
+        rows = dict((key, text) for key, text, _ in self.entries(rate=96000))
         self.assertEqual(rows["PH/" + CLEAN], "Clean Comp (PH)  live lat? RT-ok cost?")
 
     def test_sorted_by_name(self):
@@ -106,7 +106,7 @@ class menu_figures(unittest.TestCase):
     def test_the_filter_keeps_the_plugins_plugin_hostd_runs(self):
         engines = dict(CATALOGUE, ZY={"NAME": "ZynAddSubFX", "TITLE": "ZynAddSubFX"})
         rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000, 256), 5.0, "cost", True)
-        self.assertEqual([key for key, _ in rows], ["PH/Locky", "PH/" + CLEAN, "PH/Analog", "PH/Unprobed", "PH/Untested"])
+        self.assertEqual([key for key, _, _ in rows], ["PH/Locky", "PH/" + CLEAN, "PH/Analog", "PH/Unprobed", "PH/Untested"])
 
 
 class isolated_plugins(unittest.TestCase):
@@ -120,7 +120,7 @@ class isolated_plugins(unittest.TestCase):
             f.write("pin_set urn:fig:violations locky.so=1 omx-layout/1:a verdict=isolated\n")
         q = qual.qualification(FIGURES, [pins]).refresh()
         rows = tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000, 256), 5.0, "rt", True)
-        self.assertEqual([(key, text) for key, text in rows][:2],
+        self.assertEqual([(key, text) for key, text, _ in rows][:2],
                          [("PH/" + CLEAN, ROWS["PH/" + CLEAN]), ("PH/Locky", ROWS["PH/Locky"])])
 
 
