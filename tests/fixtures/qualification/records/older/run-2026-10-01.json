@@ -1,0 +1,12 @@
+{
+ "format": "lv2-plugin-measurements",
+ "formatVersion": "1.2",
+ "run": {"id": "pi5-2026-10-01", "measuredAt": "2026-10-01T03:10:00+02:00", "dimensions": ["stability"], "rates": [48000],
+         "tool": {"name": "plugin-qualify", "version": "0.8.0"}, "host": {"name": "zynthian-pi5"}, "method": {},
+         "relativeRankingOnly": true, "note": "An earlier run: the later one decides."},
+ "plugins": [
+  {"uri": "urn:q:fast", "name": "Fast Comp", "topology": {"audioInputs": 2, "audioOutputs": 2},
+   "stability": {"crashes": [{"signal": "SIGABRT"}]}}
+ ],
+ "verdicts": [{"uri": "urn:q:fast", "host": "mod-host", "rating": "unsuitable", "qualified": false, "deciding": "hosting.stability.crashed-attributed-plugin"}]
+}

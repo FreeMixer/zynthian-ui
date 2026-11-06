@@ -1,0 +1,85 @@
+{
+ "schema": "plugin-qualify.qualification-record/1",
+ "plugin": {
+  "format": "clap",
+  "id": "org.example.clean"
+ },
+ "binary": {
+  "path": "/usr/lib/clap/clean.clap"
+ },
+ "verdicts": [
+  {
+   "host": "openmixer-console",
+   "measured": true,
+   "rating": "suitable",
+   "qualified": true,
+   "hosting": "in-process"
+  }
+ ],
+ "measurements": {
+  "grid": [
+   {
+    "rate": 48000,
+    "quantum": 256,
+    "outcome": "probe.ok",
+    "latency": {
+     "declaredFrames": 0,
+     "measuredFrames": 0
+    },
+    "cost": {
+     "median": 85.2,
+     "percentile": {
+      "p": 95,
+      "value": 91.0
+     },
+     "blocks": 512,
+     "warmupBlocks": 64
+    },
+    "rtSafety": {
+     "interposer": true,
+     "swept": true,
+     "sweepApplicable": true,
+     "blocks": 512,
+     "allocations": 0,
+     "locks": 0,
+     "syscalls": 0,
+     "threadViolations": 0,
+     "processErrors": 0
+    }
+   },
+   {
+    "rate": 48000,
+    "quantum": 512,
+    "outcome": "probe.ok",
+    "latency": {
+     "declaredFrames": 0,
+     "measuredFrames": 0
+    },
+    "cost": {
+     "median": 61.0,
+     "percentile": {
+      "p": 95,
+      "value": 66.3
+     },
+     "blocks": 512,
+     "warmupBlocks": 64
+    },
+    "rtSafety": {
+     "interposer": true,
+     "swept": true,
+     "sweepApplicable": true,
+     "blocks": 512,
+     "allocations": 0,
+     "locks": 0,
+     "syscalls": 0,
+     "threadViolations": 0,
+     "processErrors": 0
+    }
+   }
+  ]
+ },
+ "measuredAt": "2026-10-28T10:00:00+00:00",
+ "probe": {
+  "outcome": "probe.ok"
+ }
+}
