@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 #
-# ZYNTHIAN_PLUGIN_ENGINE: jalv, the default, leaves the menus as they were; plugin-hostd offers the LV2
-# plugins through plugin-hostd. Runs with plain `python3 -m unittest`; zynthian_lv2 is a stand-in.
+# plugin-hostd as the engine the menus offer LV2 plugins through, and ZYNTHIAN_PLUGIN_ENGINE=jalv
+# to switch back. Runs with plain `python3 -m unittest`; zynthian_lv2 is a stand-in.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -55,7 +55,7 @@ class plugin_engine_case(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def catalogue(self, setting="plugin-hostd", binary=None):
+    def catalogue(self, setting=None, binary=None):
         env = {} if setting is None else {"ZYNTHIAN_PLUGIN_ENGINE": setting}
         with mock.patch.dict(os.environ, env):
             if setting is None:
@@ -65,14 +65,7 @@ class plugin_engine_case(unittest.TestCase):
     def menu(self, etype):
         return sorted(self.by_type[etype])
 
-    def test_by_default_the_menus_are_left_as_they_were(self):
-        self.catalogue(None)
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
-        self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "ZY"])
-        # The PH entries are known, so a chain saved with one still loads
-        self.assertIn("PH/ZamComp", self.engines)
-
-    def test_plugin_hostd_offers_lv2_plugins_through_plugin_hostd(self):
+    def test_by_default_the_menus_offer_lv2_plugins_through_plugin_hostd(self):
         self.catalogue()
         self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
         self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"])
@@ -82,17 +75,17 @@ class plugin_engine_case(unittest.TestCase):
 
     def test_jalv_switches_back(self):
         self.catalogue("jalv")
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
-        self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "ZY"])
+        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp", "PH/ZamComp"])
+        self.assertEqual(self.menu("MIDI Synth"), ["JV/Surge", "PH/Surge", "ZY"])
 
     def test_the_setting_reads_without_case_or_spaces(self):
-        self.catalogue(" PLUGIN-HOSTD ")
-        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
+        self.catalogue(" JALV ")
+        self.assertIn("JV/ZamComp", self.by_type["Audio Effect"])
 
-    def test_an_unknown_setting_is_reported_and_jalv_used(self):
+    def test_an_unknown_setting_is_reported_and_plugin_hostd_used(self):
         with self.assertLogs(level=logging.WARNING) as logs:
             self.catalogue("carla")
-        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp"])
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"])
         self.assertIn("ZYNTHIAN_PLUGIN_ENGINE=carla", logs.output[0])
 
     def test_without_plugin_hostd_installed_the_menu_says_so_and_offers_no_jalv_in_its_place(self):
@@ -115,6 +108,10 @@ class plugin_engine_case(unittest.TestCase):
         self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"], "listed once, through plugin-hostd")
         self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"])
         self.assertNotIn("NOT_WORKING", self.engines["PH/ZamComp"], "below the bar is a mark of the menu, not a wall")
+
+    def test_under_jalv_the_user_chose_both_rows_stay(self):
+        self.catalogue("jalv")
+        self.assertEqual(self.menu("Audio Effect"), ["JV/ZamComp", "PH/ZamComp"])
 
     def test_midi_tools_stay_with_jalv(self):
         self.catalogue()

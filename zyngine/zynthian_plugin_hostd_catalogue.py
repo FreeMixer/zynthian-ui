@@ -21,7 +21,7 @@ import subprocess
 
 CONFIG_DIR = os.environ.get('ZYNTHIAN_CONFIG_DIR', "/zynthian/config")
 ENGINE_TYPES = ("MIDI Synth", "Audio Effect")
-PLUGIN_ENGINES = ("jalv", "plugin-hostd")
+PLUGIN_ENGINES = ("plugin-hostd", "jalv")
 # CLAP features: the engine type a plugin takes, then its category
 CLAP_TYPES = (("instrument", "MIDI Synth"), ("audio-effect", "Audio Effect"))
 CLAP_CATS = {
@@ -105,7 +105,7 @@ def scan_clap(cache_path=None):
 
 
 def plugin_engine():
-    """The engine the menus offer LV2 plugins through: ZYNTHIAN_PLUGIN_ENGINE, jalv by default."""
+    """The engine the menus offer LV2 plugins through: ZYNTHIAN_PLUGIN_ENGINE, plugin-hostd by default."""
     engine = os.environ.get("ZYNTHIAN_PLUGIN_ENGINE", "").strip().lower() or PLUGIN_ENGINES[0]
     if engine not in PLUGIN_ENGINES:
         logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE={engine} is not one of {', '.join(PLUGIN_ENGINES)}: using {PLUGIN_ENGINES[0]}")
@@ -154,13 +154,12 @@ def add_format_lines(added):
 
 def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     """Add a PH entry for each LV2 instrument and effect in engines and each CLAP one omx-clap-scan
-    finds, to engines. An LV2 one is enabled when its jalv entry is. The entries reach zynthian_lv2's lists
-    by type, the menus, only with plugin-hostd as the plugin engine (ZYNTHIAN_PLUGIN_ENGINE=plugin-hostd):
-    then the menus list the PH entry and not its jalv one. The jalv entry stays in engines, and the PH ones
-    always are, so a chain saved with either loads as it was saved whatever the setting. Every plugin is listed,
-    whatever its qualification found (the menus mark the ones below the bar): no plugin is moved to jalv. When
-    plugin-hostd is not installed, every PH entry is marked NOT_WORKING, with why in NOT_WORKING_WHY, so the menu
-    says so."""
+    finds, to engines and to zynthian_lv2's lists by type. An LV2 one is enabled when its jalv entry is.
+    With plugin-hostd as the plugin engine, the menus list the PH entry and not its jalv one; the jalv
+    entry stays in engines, so a chain that still holds it loads as it was saved. Every plugin is listed,
+    whatever its qualification found (the menus mark the ones below the bar): no plugin is moved to jalv, which
+    the user chooses with ZYNTHIAN_PLUGIN_ENGINE. When plugin-hostd is not installed, every PH entry is marked
+    NOT_WORKING, with why in NOT_WORKING_WHY, so the menu says so."""
     available = shutil.which(binary) is not None
     try:
         from zyngine import zynthian_lv2
@@ -198,16 +197,15 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
         for info in added.values():
             info.update(NOT_WORKING="not installed", NOT_WORKING_WHY=NOT_INSTALLED_WHY)
     engines.update(added)
-    if plugin_engine() != "plugin-hostd":
-        return added
-    if not available:
+    by_ph = plugin_engine() == "plugin-hostd"
+    if by_ph and not available:
         logging.warning(f"ZYNTHIAN_PLUGIN_ENGINE is plugin-hostd but {binary} is not installed: "
                         "the menus list its plugins as not working until it is")
     for key, info in added.items():
         if info["TYPE"] in by_type:
             by_type[info["TYPE"]][key] = info
             twin = jalv_twin(key)
-            if twin:
+            if by_ph and twin:
                 by_type[info["TYPE"]].pop(twin, None)
     return added
 
