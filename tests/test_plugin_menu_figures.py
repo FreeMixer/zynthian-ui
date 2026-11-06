@@ -63,7 +63,7 @@ class menu_figures(unittest.TestCase):
         self.q = qual.qualification(FIGURES, []).refresh()
 
     def entries(self, order="tier", hosted_only=False, rate=48000, quantum=256):
-        return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, rate, quantum), 5.0, order, hosted_only)
+        return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, rate, quantum), 5.0, "warn-on-crashes", order, hosted_only)
 
     def keys(self, order, hosted_only=False):
         return [key for key, _, _ in self.entries(order, hosted_only)]
@@ -105,7 +105,7 @@ class menu_figures(unittest.TestCase):
 
     def test_the_filter_keeps_the_plugins_plugin_hostd_runs(self):
         engines = dict(CATALOGUE, ZY={"NAME": "ZynAddSubFX", "TITLE": "ZynAddSubFX"})
-        rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000, 256), 5.0, "cost", True)
+        rows = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000, 256), 5.0, "warn-on-crashes", "cost", True)
         self.assertEqual([key for key, _, _ in rows], ["PH/Locky", "PH/" + CLEAN, "PH/Analog", "PH/Unprobed", "PH/Untested"])
 
 
@@ -119,7 +119,7 @@ class isolated_plugins(unittest.TestCase):
         with open(pins, "w") as f:
             f.write("pin_set urn:fig:violations locky.so=1 omx-layout/1:a verdict=isolated\n")
         q = qual.qualification(FIGURES, [pins]).refresh()
-        rows = tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000, 256), 5.0, "rt", True)
+        rows = tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000, 256), 5.0, "warn-on-crashes", "rt", True)
         self.assertEqual([(key, text) for key, text, _ in rows][:2],
                          [("PH/" + CLEAN, ROWS["PH/" + CLEAN]), ("PH/Locky", ROWS["PH/Locky"])])
 
@@ -161,7 +161,7 @@ class record_cache(unittest.TestCase):
         refuse = mock.Mock(side_effect=AssertionError("a plugin was loaded"))
         with mock.patch("subprocess.Popen", refuse), mock.patch("ctypes.CDLL", refuse):
             q = qual.qualification(self.dir, []).refresh()
-            tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000, 256), 5.0, "cost")
+            tiers.menu_entries(CATALOGUE, lambda url: q.facts(url, 48000, 256), 5.0, "warn-on-crashes", "cost")
         refuse.assert_not_called()
 
 

@@ -91,6 +91,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.menu_entries = {}
         self.list_order = "tier"  # one of zynthian_plugin_tiers.ORDERS
         self.hosted_only = False  # list only the plugins plugin-hostd runs
+        self.bar = zynthian_plugin_tiers.plugin_bar()  # what the menus do with a plugin below our bar: tiers.BARS
         # The chain's figures with the highlighted plugin in it, asked of plugin-hostd off this thread
         self.estimator = zynthian_plugin_hostd_estimate.estimator(plugin_hostd.estimate_steps)
         self.estimate_key = None
@@ -250,7 +251,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.info_canvas.itemconfigure(self.quality_stars_label, text=quality_stars)
         complexity_stars = "⚙️" * eng_info["COMPLEX"]
         self.info_canvas.itemconfigure(self.complexity_stars_label, text=complexity_stars)
-        self.info_canvas.itemconfigure(self.description_label, text=self.description_text(eng_info))
+        self.info_canvas.itemconfigure(self.description_label,
+                                       text=self.description_text(eng_info, self.below_bar_text(eng_info)))
 
     @staticmethod
     def not_working_text(eng_info):
@@ -258,11 +260,29 @@ class zynthian_gui_engine(zynthian_gui_selector):
         return f"Not working: {why}" if why else ""
 
     @staticmethod
-    def description_text(eng_info):
+    def description_text(eng_info, below=None):
         """The description the info panel shows: the engine's, then the line naming a plugin's format, which the
-        menu titles leave out, then why it does not work."""
+        menu titles leave out, then why it does not work, or why it is below our bar."""
         return "\n\n".join(t for t in (eng_info.get("DESCR", ""), eng_info.get("FORMAT_LINE", ""),
-                                        zynthian_gui_engine.not_working_text(eng_info)) if t)
+                                        zynthian_gui_engine.not_working_text(eng_info), below) if t)
+
+    def plugin_facts(self, eng_info):
+        """The qualification facts of a plugin-hostd entry at the current rate, None for any other or when unread."""
+        if not eng_info.get("URL") or eng_info.get("NOT_WORKING"):
+            return None
+        try:
+            rate = self.zyngui.state_manager.get_jackd_samplerate()
+            return self.qualification.refresh().facts(eng_info["URL"], rate)
+        except Exception as e:
+            logging.debug(f"No qualification facts for {eng_info.get('URL')} => {e}")
+            return None
+
+    def below_bar_text(self, eng_info, eng_code=None):
+        eng_code = eng_code or (self.list_data[self.index][0] if getattr(self, "list_data", None) else None)
+        if not (eng_code or "").startswith("PH/"):
+            return None
+        facts = self.plugin_facts(eng_info)
+        return zynthian_plugin_tiers.below_bar_text(facts) if facts else None
 
     def show_details(self, eng_code=None):
         eng_info = self.get_info(eng_code)
@@ -273,6 +293,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
         if self.engine_cats:
             path = path + "/" + eng_info["CAT"]
         if eng_info:
+            below = self.below_bar_text(eng_info, eng_code)
             description = eng_info["DESCR"].replace("\n", "</p>\n<p>")
             html = f"""<html>
  <head>
@@ -286,6 +307,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
   <div class="complexity">Complexity: <span class="stars">{"⚙️" * eng_info["COMPLEX"]}</span></div>
   {f'<div class="format">{eng_info["FORMAT_LINE"]}</div>' if eng_info.get("FORMAT_LINE") else ""}
   {f'<div class="not_working">{self.not_working_text(eng_info)}</div>' if self.not_working_text(eng_info) else ""}
+  {f'<div class="below_bar">{below}</div>' if below else ""}
   <p class="description">{description}</p>
  </body>
 </html>
@@ -327,7 +349,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
             q = self.qualification.refresh()
             live_ms = zynthian_plugin_tiers.live_max_ms()
             return {cat: zynthian_plugin_tiers.menu_entries(engines, lambda url: q.facts(url, rate, quantum), live_ms,
-                                                             self.list_order, self.hosted_only)
+                                                             self.bar, self.list_order, self.hosted_only)
                     for cat, engines in engines_by_cat.items()}
         except Exception as e:
             logging.error(f"Can't read the plugin qualification => {e}")
@@ -443,29 +465,46 @@ class zynthian_gui_engine(zynthian_gui_selector):
                     self.engine_info_dirty = True
                     self.update_list()
                 else:
-                    self.zyngui.modify_chain_status["engine"] = engine
-                    if "chain_id" in self.zyngui.modify_chain_status:
-                        # Modifying existing chain
-                        pass
+                    question = self.crash_question(engine)
+                    if question:
+                        # its qualification recorded a crash: the user decides, warned
+                        self.zyngui.show_confirm(question, self.choose_engine, engine)
                     else:
-                        # Adding engine to new chain
-                        if engine == "AP":
-                            # TODO: Better done with engine flag
-                            self.zyngui.modify_chain_status["audio_thru"] = False
-                        if self.zyngui.modify_chain_status["type"] in ("Audio Effect", "Audio Generator") and not self.zyngui.modify_chain_status["midi_thru"]:
-                            self.zyngui.modify_chain_status["midi_chan"] = None
-                    self.zyngui.modify_chain()
+                        self.choose_engine(engine)
         elif t == 'B':
             if not self.back_action():
                 self.show_all = True
                 self.get_engines_by_cat()
                 self.update_list()
 
+    def crash_question(self, engine):
+        """The question asked before adding a plugin whose qualification recorded a crash, None for any other."""
+        if not engine.startswith("PH/"):
+            return None
+        info = self.chain_manager.engine_info[engine]
+        facts = self.plugin_facts(info)
+        return zynthian_plugin_tiers.crash_question(info.get("NAME") or engine, facts, self.bar) if facts else None
+
+    def choose_engine(self, engine):
+        self.zyngui.modify_chain_status["engine"] = engine
+        if "chain_id" in self.zyngui.modify_chain_status:
+            # Modifying existing chain
+            pass
+        else:
+            # Adding engine to new chain
+            if engine == "AP":
+                # TODO: Better done with engine flag
+                self.zyngui.modify_chain_status["audio_thru"] = False
+            if self.zyngui.modify_chain_status["type"] in ("Audio Effect", "Audio Generator") and not self.zyngui.modify_chain_status["midi_thru"]:
+                self.zyngui.modify_chain_status["midi_chan"] = None
+        self.zyngui.modify_chain()
+
     # --------------------------------------------------------------------------
     # List options: the order and the plugin-hostd filter
     # --------------------------------------------------------------------------
 
     order_titles = {"tier": "Tier", "name": "Name", "cost": "Cost", "latency": "Latency", "rt": "RT safety"}
+    bar_titles = {"qualified-only": "Qualified only", "warn-on-crashes": "Warn on crashes", "load-all": "Load all"}
 
     def show_menu(self):
         options = {"Sort by": None}
@@ -475,6 +514,10 @@ class zynthian_gui_engine(zynthian_gui_selector):
         options["Filter"] = None
         mark = "\u2612" if self.hosted_only else "\u2610"
         options[f"{mark} plugin-hostd plugins only"] = ("hosted_only", not self.hosted_only)
+        options["Plugins below our bar"] = None
+        for bar, title in self.bar_titles.items():
+            mark = "\u2612" if bar == self.bar else "\u2610"
+            options[f"{mark} {title}"] = ("bar", bar)
         self.zyngui.screens['option'].config("Plugin list", options, self.list_options_cb)
         self.zyngui.show_screen('option')
 
@@ -488,6 +531,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
         what, value = value
         if what == "order":
             self.list_order = value
+        elif what == "bar":
+            self.bar = value
         else:
             self.hosted_only = value
         self.index = 0

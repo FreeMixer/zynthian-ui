@@ -105,6 +105,17 @@ class plugin_engine_case(unittest.TestCase):
         self.assertIn("not installed", logs.output[0])
         self.assertNotIn("jalv", logs.output[0])
 
+    def test_a_plugin_its_pins_refuse_is_listed_once_under_plugin_hostd_never_moved_to_jalv(self):
+        pins = os.path.join(os.path.dirname(self.binary), "qualified.pins")
+        with open(pins, "w") as f:
+            f.write("pin_set urn:surge surge.so=00 omx-layout/1:00 verdict=refused\n"
+                    "pin_set urn:zamaudio:ZamComp z.so=00 omx-layout/1:00 verdict=refused\n")
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": pins}):
+            self.catalogue()
+        self.assertEqual(self.menu("Audio Effect"), ["PH/ZamComp"], "listed once, through plugin-hostd")
+        self.assertEqual(self.menu("MIDI Synth"), ["PH/Surge", "ZY"])
+        self.assertNotIn("NOT_WORKING", self.engines["PH/ZamComp"], "below the bar is a mark of the menu, not a wall")
+
     def test_midi_tools_stay_with_jalv(self):
         self.catalogue()
         self.assertEqual(self.menu("MIDI Tool"), ["JV/Arp"])

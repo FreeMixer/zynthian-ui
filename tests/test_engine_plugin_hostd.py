@@ -1282,6 +1282,50 @@ class test_snapshot(plugin_hostd_case):
         self.assertEqual(proc.get_state()["controllers"]["gain"]["value"], 0.0)
 
 
+class test_below_bar(plugin_hostd_case):
+    """A plugin below our bar, chosen by the user, loads in plugin-hostd in a worker of its own; a refused one is
+    first accepted as the user's choice. Nothing is handed to another host."""
+
+    def qualify(self, pins="", records=None):
+        path = os.path.join(self.tmp, "pins")
+        with open(path, "w") as f:
+            f.write(pins)
+        patcher = mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_PINS": path,
+                                               "ZYNTHIAN_QUALIFICATION_DIR": records or os.path.join(self.tmp, "none")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        ph.qualification.stamp = None
+
+    def test_a_refused_plugin_is_accepted_and_added_in_a_worker_of_its_own(self):
+        self.qualify("pin_set urn:test:amp amp.so=00 omx-layout/1:00 verdict=refused\n")
+        with mock.patch.object(fake_plugin_hostd, "REFUSED", {"urn:test:amp"}):
+            fake = self.serve()
+            proc = self.add(self.chain(), "PH/Amp")
+        lines = [l for l in fake.lines if l.split()[0] in ("pin_accept", "add")]
+        self.assertEqual(lines, ["pin_accept urn:test:amp", "add urn:test:amp 1000 own"])
+        self.assertEqual(proc.engine.replay_lines()[0], "add urn:test:amp 1000 own")
+        self.assertIsNone(ph.member_of(proc, "urn:test:amp"), "it joins no run")
+
+    def test_a_plugin_that_crashed_in_qualification_runs_alone_and_nothing_is_accepted(self):
+        records = os.path.join(self.tmp, "records")
+        os.mkdir(records)
+        with open(os.path.join(records, "run.json"), "w") as f:
+            json.dump({"format": "lv2-plugin-measurements", "run": {"measuredAt": "2026-11-01"},
+                       "plugins": [{"uri": "urn:test:amp"}],
+                       "verdicts": [{"uri": "urn:test:amp", "rating": "unsuitable",
+                                     "deciding": "hosting.stability.crashed-attributed-plugin"}]}, f)
+        self.qualify(records=records)
+        fake = self.serve()
+        self.add(self.chain(), "PH/Amp")
+        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "add")], ["add urn:test:amp 1000 own"])
+
+    def test_a_qualified_plugin_is_added_as_before(self):
+        self.qualify("pin_set urn:test:amp amp.so=00 omx-layout/1:00 verdict=in-process\n")
+        fake = self.serve()
+        self.add(self.chain(), "PH/Amp")
+        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "add")], ["add urn:test:amp 1000"])
+
+
 class test_catalogue(plugin_hostd_case):
 
     def test_clap_files_that_share_a_plugin_id_are_separate_entries(self):

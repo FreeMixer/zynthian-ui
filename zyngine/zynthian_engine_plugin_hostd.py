@@ -33,6 +33,8 @@ from zyngine.zynthian_signal_manager import zynsigman
 from zyngine import zynthian_plugin_hostd_protocol
 from zyngine import zynthian_plugin_hostd_grouping
 from zyngine import zynthian_plugin_hostd_estimate
+from zyngine import zynthian_plugin_qualification
+from zyngine import zynthian_plugin_tiers
 from zyngine.zynthian_engine import zynthian_engine
 from zyngine.zynthian_controller import zynthian_controller
 from zyngine.zynthian_plugin_hostd_catalogue import clap_plugins
@@ -49,6 +51,11 @@ COMPARE_SLOTS = ("A", "B", "C", "D")  # omx-panel's COMPARE_SLOTS, the menu's ro
 COMPARE_PAUSE = 1.0  # seconds: controller moves closer than this are one undo step
 COMPARE_QUEUE = 64  # steps waiting for the next omx-panel run, its ring's bound
 RUN_NUMBERS = 1000  # a chain's serial runs numbered to the daemon, see run_number
+# The verb that tells plugin-hostd the user chose a plugin below our bar (its pin refused, or it crashed in qualification)
+ACCEPT_VERB = "pin_accept"
+# Below-bar reasons that run a plugin in a worker of its own
+ISOLATE_REASONS = ("refused", "crashed", "hung")
+qualification = zynthian_plugin_qualification.qualification()
 RETRY_S = 60.0  # a run the daemon refused, or planned alone for a reason that can change, is asked again after this
 RETRY_REASONS = ("no-verdict", "plan-refused:")  # plan_get reasons that the qualification sync or a pin can lift
 WATCH_S = 2.0  # how often the grouped workers are read back, to follow what the daemon moves by itself
@@ -340,12 +347,21 @@ class plugin_hostd_daemon:
         if error.code == protocol.code("ERR_INVALID_OPERATION") and error.position is None:
             self.bulk_verbs = False
 
-    def add(self, engine, uri):
-        """Add the plugin under the first free instance number and register the engine."""
+    def accept_below_bar(self, uri):
+        """The user chose a plugin below our bar: tell the daemon it is the user's choice, so its add is taken. The one
+        place that names the verb. A refusal is logged and the add goes on: if it is refused too, it says why."""
+        try:
+            self.call(f"{ACCEPT_VERB} {uri}")
+        except plugin_hostd_error as e:
+            logging.warning(f"plugin-hostd {ACCEPT_VERB} {uri} => {e}")
+
+    def add(self, engine, uri, placement=None):
+        """Add the plugin under the first free instance number and register the engine. placement: own for a plugin
+        that runs in a worker of its own, None for the daemon's own choice."""
         for instance in range(FIRST_INSTANCE, LAST_INSTANCE + 1):
             if instance not in self.engines:
                 try:
-                    self.call(f"add {uri} {instance}", SLOW_TIMEOUT)
+                    self.call(f"add {uri} {instance}" + (f" {placement}" if placement else ""), SLOW_TIMEOUT)
                     self.engines[instance] = engine
                     return instance
                 except plugin_hostd_error as e:
@@ -540,8 +556,8 @@ def audio_path_slots(chain):
 
 def member_of(p, value):
     """What signal_steps is given for a processor: None for one of another engine, else the value with what decides
-    the runs it may join (member_info)."""
-    if not isinstance(p.engine, zynthian_engine_plugin_hostd) or value is None:
+    the runs it may join (member_info). A plugin below our bar keeps its worker of its own: it joins no run."""
+    if not isinstance(p.engine, zynthian_engine_plugin_hostd) or value is None or p.engine.placement == "own":
         return None
     return member_info(value, p.engine.takes_notes(), p.engine.main_widths())
 
@@ -1088,6 +1104,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.nickname = eng_code
         self.plugin_uri = self.eng_info["URL"]
         self.instance = None
+        self.placement = None  # own when the plugin is below our bar and runs in a worker of its own
         self.notes = None  # whether the plugin takes notes, see takes_notes
         self.widths = False  # its main input and output channels, see main_widths; False until asked
         self.preset_key = None
@@ -1107,7 +1124,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
 
     def add_processor(self, processor):
         if self.instance is None:
-            self.instance = daemon.add(self, self.plugin_uri)
+            self.placement = self.below_bar_placement()
+            self.instance = daemon.add(self, self.plugin_uri, self.placement)
             self.jackname = f"effect_{self.instance}"
             self.zctrls = self.build_controllers()
             self.compare_settled = self.compare_values()
@@ -1122,6 +1140,20 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         processor.jackname = self.jackname
         self.set_midi_chan(processor)
         processor.refresh_controllers()
+
+    def below_bar_placement(self):
+        """own for a plugin below our bar (its pin refused, a crash or a hang in qualification, an RT-safety fault),
+        after telling the daemon a refused one is the user's choice; None for the rest. It runs in plugin-hostd
+        either way: no plugin is handed to another host."""
+        try:
+            facts = qualification.refresh().facts(self.plugin_uri, None)
+        except Exception as e:
+            logging.warning(f"Can't read the qualification of {self.plugin_uri} => {e}")
+            return None
+        reason = zynthian_plugin_tiers.place(facts).reason
+        if reason == "refused":
+            daemon.accept_below_bar(self.plugin_uri)
+        return "own" if reason in ISOLATE_REASONS or facts.rt_safe is False else None
 
     def main_widths(self):
         """(main input channels, main output channels) from the plugin's scanned descriptor, asked once; None when
@@ -1172,7 +1204,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     def replay_lines(self, bulk=False):
         """What puts the instance back in a daemon that lost it: the add, the preset, every value. bulk: the values
         of the parameters in one param_set_many line, for a daemon of protocol 0.3."""
-        lines = [f"add {self.plugin_uri} {self.instance}"]
+        lines = [f"add {self.plugin_uri} {self.instance}" + (f" {self.placement}" if self.placement else "")]
         if self.preset_key:
             lines.append(f"preset_load {self.instance} {self.preset_key}")
         params = [z for z in self.zctrls.values() if z is not self.bypass_zctrl]

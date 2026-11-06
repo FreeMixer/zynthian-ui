@@ -32,8 +32,13 @@
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
 # plugin between tiers.
 #
-# The plugins below the bar are listed after the others, with their mark. A plugin-hostd pin judges plugin-hostd's
-# rows only: a jalv row (JV/) is placed without it. An entry the catalogue or a refused add marked NOT_WORKING (it does not load at all) is listed last,
+# The bar is a recommendation, never a wall, and no plugin is handed to another host. ZYNTHIAN_PLUGIN_BAR (or the
+# list options) says what the menus do with a plugin below it: qualified-only lists only the plugins that passed
+# (no below-bar and no unqualified ones); warn-on-crashes, the default, lists every plugin, the ones below the bar
+# after the others with their mark, and asks before adding one whose qualification recorded a crash; load-all lists
+# them the same and asks nothing. A below-bar plugin that is added runs in plugin-hostd in a worker of its own. A
+# plugin-hostd pin judges plugin-hostd's rows only: a jalv row (JV/), there when the user chose jalv, is placed
+# without it. An entry the catalogue or a refused add marked NOT_WORKING (it does not load at all) is listed last,
 # greyed, with its word; the detail panel says why.
 #
 # A menu is ordered by tier (live, studio, the rest) or by one figure: name, cost, latency or RT safety,
@@ -60,6 +65,8 @@ from collections import namedtuple
 
 LIVE_MAX_MS = 5.0
 RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "below": 3, "not working": 4}  # entries that are not plugins rank as unverified
+BARS = ("qualified-only", "warn-on-crashes", "load-all")
+DEFAULT_BAR = "warn-on-crashes"
 SEP = " · "
 ORDERS = ("tier", "name", "cost", "latency", "rt")
 RT_WORDS = {True: "RT-ok", False: "RT-alone", None: "RT-?"}
@@ -73,6 +80,50 @@ def live_max_ms():
     except ValueError:
         logging.warning(f"ZYNTHIAN_PLUGIN_LIVE_MS={os.environ['ZYNTHIAN_PLUGIN_LIVE_MS']} is not a number: using {LIVE_MAX_MS}")
         return LIVE_MAX_MS
+
+
+def plugin_bar():
+    """ZYNTHIAN_PLUGIN_BAR, one of BARS; warn-on-crashes when unset or not one of them."""
+    bar = os.environ.get("ZYNTHIAN_PLUGIN_BAR", "").strip().lower() or DEFAULT_BAR
+    if bar not in BARS:
+        logging.warning(f"ZYNTHIAN_PLUGIN_BAR={bar} is not one of {', '.join(BARS)}: using {DEFAULT_BAR}")
+        bar = DEFAULT_BAR
+    return bar
+
+
+# What a qualification code says, in plain words, by its group
+CAUSES = (("hosting.stability.crash", "a crash"), ("hosting.stability.crashed", "a crash"),
+          ("hosting.stability.unsoaked", "the soak was not run"), ("hosting.rt-safety.", "an RT-safety fault"),
+          ("hosting.features.", "a feature it needs is not provided"), ("hosting.latency.", "its latency was not measured"),
+          ("hosting.pin.", "a pin mismatch"), ("probe.crashed", "a crash at probe"), ("probe.timeout", "the probe timed out"))
+WHAT = {"refused": "plugin-hostd's qualification refused it", "crashed": "it crashed during qualification",
+        "hung": "its qualification run did not finish"}
+
+
+def cause_text(code):
+    """A qualification code in plain words, the code itself after them; None for none."""
+    if not code:
+        return None
+    plain = next((text for prefix, text in CAUSES if code.startswith(prefix)), None)
+    return f"{plain} ({code})" if plain else code
+
+
+def below_bar_text(facts):
+    """Why a plugin is below our bar, in plain words, for the detail panel; None when it is not."""
+    reason = place(facts).reason
+    if not reason:
+        return None
+    cause = cause_text(facts.deciding) or ("a crash" if reason == "crashed" else "the probe timed out" if reason == "hung" else None)
+    return f"Below our bar: {WHAT[reason]}" + (f": {cause}" if cause else "") + \
+        ". You can still load it: plugin-hostd runs it in a worker of its own."
+
+
+def crash_question(name, facts, bar):
+    """The question asked before adding a plugin whose qualification recorded a crash, under warn-on-crashes;
+    None for every other plugin and bar: a below-bar reason that is no crash is information only."""
+    if bar != "warn-on-crashes" or not facts.crashed:
+        return None
+    return f"{name} crashed during qualification: {cause_text(facts.deciding) or 'a crash'}. Load it anyway?"
 
 
 def number_text(n):
@@ -148,11 +199,11 @@ def one_row_per_plugin(rows):
     return [row for row in rows if id(row) not in dropped]
 
 
-def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, order="tier", hosted_only=False):
+def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, bar=DEFAULT_BAR, order="tier", hosted_only=False):
     """[(key, text, greyed)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
     first, then studio, then the rest in their own order; or by name or by a figure, the rows with
-    figures first, then the rest. Then the plugins below the bar, with their mark, then the entries that do not
-    load at all, greyed. hosted_only keeps the PH rows.
+    figures first, then the rest. Then the plugins below the bar, with their mark (left out under qualified-only,
+    with the ones not qualified), then the entries that do not load at all, greyed. hosted_only keeps the PH rows.
     A plugin present in more than one format is one row, the best placed (one_row_per_plugin).
     facts_of(url) gives a plugin's Facts; entries that are not plugins keep their title."""
     rows = []
@@ -171,6 +222,8 @@ def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, order="tier", hosted_on
         if not key.startswith("PH/"):
             facts = facts._replace(pin=None)  # plugin-hostd's pin does not judge jalv
         p = place(facts, live_ms)
+        if bar == "qualified-only" and (p.below or p.tier == "unverified"):
+            continue
         rows.append((RANK[p.tier], n, key, f"{title}  {p.tag}", False,
                      figure(facts, order) if p.tier not in ("unverified", "below") else None, ident))
     rows = one_row_per_plugin(rows)

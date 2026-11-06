@@ -98,6 +98,13 @@ class settings(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_LIVE_MS": "fast"}), self.assertLogs(level=logging.WARNING):
             self.assertEqual(tiers.live_max_ms(), 5.0)
 
+    def test_the_bar(self):
+        for value, bar in (("qualified-only", "qualified-only"), (" Load-All ", "load-all"), ("", "warn-on-crashes")):
+            with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_BAR": value}):
+                self.assertEqual(tiers.plugin_bar(), bar, value)
+        with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_BAR": "never"}), self.assertLogs(level=logging.WARNING):
+            self.assertEqual(tiers.plugin_bar(), "warn-on-crashes")
+
     def test_paths(self):
         with mock.patch.dict(os.environ, {"ZYNTHIAN_QUALIFICATION_DIR": "", "OMX_QUALIFICATION_DIR": "",
                                           "ZYNTHIAN_QUALIFICATION_PINS": "", "ZYNTHIAN_PLUGIN_HOSTD_CONF": "/absent.conf"}):
@@ -305,6 +312,9 @@ class pi5_records(unittest.TestCase):
                           ("None (PH)  not qualified", False),
                           ("3 Band EQ (PH)  below bar · refused", False),
                           ("3 Band Splitter (PH)  below bar · refused", False)])
+        qualified = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), bar="qualified-only")
+        self.assertEqual([text for _, text, _ in qualified], ["Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked",
+                                                             "Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked"])
 
     def test_a_refused_plugin_is_listed_marked_and_last_never_handed_to_its_jalv_row(self):
         engines = {"JV/Refused": {"TITLE": "Refused", "URL": "urn:r"}, "PH/Refused": {"TITLE": "Refused (PH)", "URL": "urn:r"},
@@ -315,6 +325,7 @@ class pi5_records(unittest.TestCase):
         self.assertEqual([(text, grey) for _, text, grey in rows],
                          [("Fast (PH)  live 48fr RT-ok cost?", False), ("Refused  not qualified", False),
                           ("ZynAddSubFX", False), ("Refused (PH)  below bar · refused", False)])
+        self.assertEqual(tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), bar="load-all"), rows)
 
     def test_an_entry_the_catalogue_marks_not_working_is_listed_greyed_with_its_word(self):
         engines = {"PH/A": {"TITLE": "A (PH)", "URL": "urn:a", "NOT_WORKING": "not installed"},
@@ -454,11 +465,11 @@ class menu_order(unittest.TestCase):
         with self.assertLogs(level=logging.WARNING):
             self.q = qual.qualification(RECORDS, [PINS]).refresh()
 
-    def entries(self):
-        return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, 48000), 5.0)
+    def entries(self, bar):
+        return tiers.menu_entries(CATALOGUE, lambda url: self.q.facts(url, 48000), 5.0, bar)
 
     def test_live_first_then_studio_then_the_rest_then_the_ones_below_the_bar_marked(self):
-        self.assertEqual(self.entries(), [
+        self.assertEqual(self.entries("warn-on-crashes"), [
             ("PH/Fast", "Fast Comp (PH)  live 0fr RT-ok cost?", False),
             ("PH/Unsoaked", "New Gate (PH)  live 64fr RT-ok cost? unsoaked", False),
             ("JV/Fast", "Fast Comp  live 0fr RT-ok cost?", False),
@@ -470,6 +481,27 @@ class menu_order(unittest.TestCase):
             ("PH/Refused", "Refused Amp (PH)  below bar · refused", False),
             ("PH/Hung", "Stuck Pitch (PH)  below bar · hung", False),
         ])
+        self.assertEqual(self.entries("load-all"), self.entries("warn-on-crashes"))
+
+    def test_qualified_only_lists_only_what_passed(self):
+        self.assertEqual([key for key, _, _ in self.entries("qualified-only")],
+                         ["PH/Fast", "PH/Unsoaked", "JV/Fast", "PH/Slow", "PH/Alloc", "AP"])
+
+    def test_only_a_recorded_crash_asks_before_adding_and_only_under_warn_on_crashes(self):
+        crashed, refused = self.q.facts("urn:q:crashed", 48000), self.q.facts("urn:q:refused", 48000)
+        self.assertEqual(tiers.crash_question("Crashy Delay", crashed, "warn-on-crashes"),
+                         "Crashy Delay crashed during qualification: a crash "
+                         "(hosting.stability.crashed-attributed-plugin). Load it anyway?")
+        self.assertIsNone(tiers.crash_question("Crashy Delay", crashed, "load-all"))
+        self.assertIsNone(tiers.crash_question("Refused Amp", refused, "warn-on-crashes"), "information only")
+        self.assertIsNone(tiers.crash_question("Fast", self.q.facts("urn:q:fast", 48000), "warn-on-crashes"))
+
+    def test_the_detail_says_why_a_plugin_is_below_the_bar_in_plain_words(self):
+        self.assertEqual(tiers.below_bar_text(self.q.facts("urn:q:refused", 48000)),
+                         "Below our bar: plugin-hostd's qualification refused it: a feature it needs is not provided "
+                         "(hosting.features.required-not-provided). You can still load it: plugin-hostd runs it in a "
+                         "worker of its own.")
+        self.assertIsNone(tiers.below_bar_text(self.q.facts("urn:q:fast", 48000)))
 
     def test_without_any_record_the_order_is_the_engine_configs(self):
         q = qual.qualification(os.path.join(RECORDS, "absent"), []).refresh()
