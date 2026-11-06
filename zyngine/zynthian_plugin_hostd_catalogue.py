@@ -143,8 +143,9 @@ def add_catalogue(engines, clap=None, binary="plugin-hostd"):
     finds, to engines. An LV2 one is enabled when its jalv entry is. The entries reach zynthian_lv2's lists
     by type, the menus, only with plugin-hostd as the plugin engine (ZYNTHIAN_PLUGIN_ENGINE=plugin-hostd):
     then the menus list the PH entry and not its jalv one. The jalv entry stays in engines, and the PH ones
-    always are, so a chain saved with either loads as it was saved whatever the setting. When plugin-hostd is not
-    installed, the menus keep offering jalv."""
+    always are, so a chain saved with either loads as it was saved whatever the setting. Every plugin is listed,
+    whatever its qualification found (the menus mark the ones below the bar): no plugin is moved to jalv. When
+    plugin-hostd is not installed, the menus keep offering jalv."""
     available = shutil.which(binary) is not None
     try:
         from zyngine import zynthian_lv2
