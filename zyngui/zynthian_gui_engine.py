@@ -386,6 +386,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
             self.list_data.append(("None", 0, "None", "None"))
 
         greyed = []
+        below = []
         if self.engine_cats:
             # Fill engine list
             cat = self.engine_cats[self.cat_index]
@@ -393,7 +394,9 @@ class zynthian_gui_engine(zynthian_gui_selector):
             for eng, text, grey in self.menu_entries[cat]:
                 i = len(self.list_data)
                 info = engines_info[eng]
-                if grey:
+                if grey == zynthian_plugin_tiers.BELOW:
+                    below.append(i)
+                elif grey:
                     greyed.append(i)
                 if self.show_all:
                     if info["ENABLED"]:
@@ -415,6 +418,8 @@ class zynthian_gui_engine(zynthian_gui_selector):
         super().fill_list()
         for i in greyed:
             self.listbox.itemconfig(i, {'fg': zynthian_gui_config.color_tx_off})
+        for i in below:
+            self.listbox.itemconfig(i, {'fg': zynthian_gui_config.color_warn})
 
     def select(self, index=None, set_zctrl=True):
         super().select(index, set_zctrl)
@@ -504,7 +509,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
     # --------------------------------------------------------------------------
 
     order_titles = {"tier": "Tier", "name": "Name", "cost": "Cost", "latency": "Latency", "rt": "RT safety"}
-    bar_titles = {"qualified-only": "Qualified only", "warn-on-crashes": "Warn on crashes", "load-all": "Load all"}
+    bar_titles = zynthian_plugin_tiers.BAR_TITLES
 
     def show_menu(self):
         options = {"Sort by": None}
@@ -521,6 +526,13 @@ class zynthian_gui_engine(zynthian_gui_selector):
         self.zyngui.screens['option'].config("Plugin list", options, self.list_options_cb)
         self.zyngui.show_screen('option')
 
+    def refresh_bar(self):
+        """Take the bar the configuration holds now (the admin menu may have changed it) and redraw the list."""
+        self.bar = zynthian_plugin_tiers.plugin_bar()
+        if self.shown:
+            self.get_engines_by_cat()
+            self.update_list()
+
     def toggle_menu(self):
         if self.shown:
             self.show_menu()
@@ -532,7 +544,7 @@ class zynthian_gui_engine(zynthian_gui_selector):
         if what == "order":
             self.list_order = value
         elif what == "bar":
-            self.bar = value
+            self.bar = zynthian_plugin_tiers.set_plugin_bar(value)
         else:
             self.hosted_only = value
         self.index = 0

@@ -39,7 +39,8 @@
 # them the same and asks nothing. A below-bar plugin that is added runs in plugin-hostd in a worker of its own. A
 # plugin-hostd pin judges plugin-hostd's rows only: a jalv row (JV/), there when the user chose jalv, is placed
 # without it. An entry the catalogue or a refused add marked NOT_WORKING (it does not load at all) is listed last,
-# greyed, with its word; the detail panel says why.
+# greyed, with its word; the detail panel says why. A below-bar row carries the style BELOW (the screen paints it in
+# the warning colour), a not-working row True (greyed), the rest False.
 #
 # A menu is ordered by tier (live, studio, the rest) or by one figure: name, cost, latency or RT safety,
 # by the value shown, a figure the record does not hold after the ones it does. In every order the rows
@@ -66,8 +67,10 @@ from collections import namedtuple
 LIVE_MAX_MS = 5.0
 RANK = {"live": 0, "studio": 1, "unverified": 2, None: 2, "below": 3, "not working": 4}  # entries that are not plugins rank as unverified
 BARS = ("qualified-only", "warn-on-crashes", "load-all")
+BAR_TITLES = {"qualified-only": "Qualified only", "warn-on-crashes": "Warn on crashes", "load-all": "Load all"}
 DEFAULT_BAR = "warn-on-crashes"
 SEP = " · "
+BELOW = "below"  # the style of a row below the bar: not greyed, it can be loaded, but marked
 ORDERS = ("tier", "name", "cost", "latency", "rt")
 RT_WORDS = {True: "RT-ok", False: "RT-alone", None: "RT-?"}
 
@@ -89,6 +92,27 @@ def plugin_bar():
         logging.warning(f"ZYNTHIAN_PLUGIN_BAR={bar} is not one of {', '.join(BARS)}: using {DEFAULT_BAR}")
         bar = DEFAULT_BAR
     return bar
+
+
+def set_plugin_bar(bar, fpath=None):
+    """Choose the bar: saved in the Zynthian configuration (zynconf.save_config, which also sets the environment, so the
+    next plugin_bar() answers it at once, no restart), and returned. A value that is not one of BARS raises ValueError.
+    A configuration that can't be written is logged and the choice holds until the next start."""
+    if bar not in BARS:
+        raise ValueError(f"{bar} is not one of {', '.join(BARS)}")
+    try:
+        import zynconf
+        zynconf.save_config({"ZYNTHIAN_PLUGIN_BAR": bar}, False, fpath)
+    except Exception as e:
+        logging.error(f"Can't save ZYNTHIAN_PLUGIN_BAR={bar} => {e}")
+        os.environ["ZYNTHIAN_PLUGIN_BAR"] = bar
+    return bar
+
+
+def bar_menu_options():
+    """{title with its check box: bar} for the admin menu, the bar in force ticked."""
+    current = plugin_bar()
+    return {f"{chr(0x2612) if bar == current else chr(0x2610)} {title}": bar for bar, title in BAR_TITLES.items()}
 
 
 # What a qualification code says, in plain words, by its group
@@ -200,13 +224,14 @@ def one_row_per_plugin(rows):
 
 
 def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, bar=DEFAULT_BAR, order="tier", hosted_only=False):
-    """[(key, text, greyed)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
+    """[(key, text, style)] of one menu's engines {key: info}, in order (one of ORDERS): by tier, live
     first, then studio, then the rest in their own order; or by name or by a figure, the rows with
     figures first, then the rest. Then the plugins below the bar, with their mark (left out under qualified-only,
     with the ones not qualified), then the entries that do not load at all, greyed. hosted_only keeps the PH rows.
     A plugin present in more than one format is one row, the best placed (one_row_per_plugin).
     facts_of(url) gives a plugin's Facts; entries that are not plugins keep their title."""
     rows = []
+    marked = set()
     for n, (key, info) in enumerate(engines.items()):
         if hosted_only and not key.startswith("PH/"):
             continue
@@ -224,12 +249,15 @@ def menu_entries(engines, facts_of, live_ms=LIVE_MAX_MS, bar=DEFAULT_BAR, order=
         p = place(facts, live_ms)
         if bar == "qualified-only" and (p.below or p.tier == "unverified"):
             continue
+        if p.below:
+            marked.add(key)
         rows.append((RANK[p.tier], n, key, f"{title}  {p.tag}", False,
                      figure(facts, order) if p.tier not in ("unverified", "below") else None, ident))
     rows = one_row_per_plugin(rows)
+    below_keys = {key for _, _, key, _, _, _, _ in rows if key in marked}
     if order == "tier":
         rows.sort(key=lambda r: r[:2])
     else:
         # live and studio are one group: the figure orders them
         rows.sort(key=lambda r: (max(r[0], RANK["studio"]), r[5] is None, r[5] or 0, r[3].lower(), r[1]))
-    return [(key, text, greyed) for _, _, key, text, greyed, _, _ in rows]
+    return [(key, text, greyed or (BELOW if key in below_keys else False)) for _, _, key, text, greyed, _, _ in rows]
