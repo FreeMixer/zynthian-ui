@@ -1,0 +1,31 @@
+{
+ "schema_version": 5,
+ "last_snapshot_fpath": "/zynthian/zynthian-my-data/snapshots/000/one-jv-one-zy.zss",
+ "midi_profile_state": {},
+ "chains": {
+  "0": {"title": "Main", "midi_chan": null, "midi_thru": false, "audio_thru": true, "zmop_index": null, "cc_route": [], "slots": [], "zctrls": {}},
+  "1": {"title": "", "midi_chan": 0, "midi_thru": false, "audio_thru": false, "zmop_index": 0, "cc_route": [], "slots": [{"1": "ZY"}, {"2": "JV/ZamComp"}], "zctrls": {}}
+ },
+ "zs3": {
+  "zs3-0": {
+   "title": "Last state",
+   "active_chain": 1,
+   "chains": {"1": {"audio_out": ["mixer"], "midi_cc": {"74": [[2, "threshold"]]}}},
+   "processors": {
+    "1": {"bank_info": ["/zynthian/zynthian-data/zynbanks/Pads", 0, "Pads", "_", "Pads"], "bank_subdir_info": null, "preset_info": ["/zynthian/zynthian-data/zynbanks/Pads/0001-Soft.xiz", 1, "Soft", "Pads"], "preset_subdir_info": null, "controllers": {"volume": {"value": 96}}, "current_screen_index": 0},
+    "2": {"bank_info": ["urn:zamaudio:ZamComp#presets", null, "Factory", null], "bank_subdir_info": null, "preset_info": ["urn:zamaudio:ZamComp#preset002", null, "Gentle", "Factory"], "preset_subdir_info": null, "controllers": {"threshold": {"value": -18.5, "midi_cc": [1, null, 74, 0]}, "ratio": {"value": 4.0}, "attack": {"value": 10.0}}, "current_screen_index": 1}
+   }
+  },
+  "zs3-1": {
+   "title": "Hard",
+   "active_chain": 1,
+   "chains": {},
+   "processors": {
+    "2": {"bank_info": ["urn:zamaudio:ZamComp#presets", null, "Factory", null], "bank_subdir_info": null, "preset_info": ["urn:zamaudio:ZamComp#preset002", null, "Gentle", "Factory"], "preset_subdir_info": null, "controllers": {"threshold": {"value": -30.0}, "ratio": {"value": 8.0}, "attack": {"value": 2.0}}, "current_screen_index": 0}
+   }
+  }
+ },
+ "last_zs3_id": "zs3-1",
+ "gui": {"pinned_chains": 0},
+ "zynseq": {}
+}

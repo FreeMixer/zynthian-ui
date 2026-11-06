@@ -1,0 +1,6 @@
+{
+"JV/ZamComp": {"ID": "zamcomp", "NAME": "ZamComp", "TITLE": "ZamComp", "TYPE": "Audio Effect", "CAT": "Dynamics", "ENABLED": true, "INDEX": 10, "URL": "urn:zamaudio:ZamComp", "UI": "", "DESCR": "", "QUALITY": 3, "COMPLEX": 2, "EDIT": 0},
+"JV/Surge XT": {"ID": "surgext", "NAME": "Surge XT", "TITLE": "Surge XT", "TYPE": "MIDI Synth", "CAT": "Synth", "ENABLED": true, "INDEX": 11, "URL": "https://surge-synthesizer.github.io/lv2/surge-xt", "UI": "", "DESCR": "", "QUALITY": 4, "COMPLEX": 4, "EDIT": 0},
+"JV/Arpeggiator": {"ID": "arp", "NAME": "Arpeggiator", "TITLE": "Arpeggiator", "TYPE": "MIDI Tool", "CAT": "Arpeggiator", "ENABLED": true, "INDEX": 12, "URL": "http://example.org/lv2/arp", "UI": "", "DESCR": "", "QUALITY": 3, "COMPLEX": 1, "EDIT": 0},
+"ZY": {"ID": "zy", "NAME": "ZynAddSubFX", "TITLE": "ZynAddSubFX", "TYPE": "MIDI Synth", "CAT": "Synth", "ENABLED": true, "INDEX": 1, "URL": "", "UI": "", "DESCR": "", "QUALITY": 5, "COMPLEX": 5, "EDIT": 0}
+}

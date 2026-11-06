@@ -1,0 +1,5 @@
+{
+ "schema_version": 4,
+ "chains": {"1": {"slots": [{"1": "JV/ZamComp"}]}},
+ "zs3": {"zs3-0": {"processors": {"1": {"controllers": {}}}}}
+}
