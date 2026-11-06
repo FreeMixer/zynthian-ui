@@ -25,7 +25,19 @@ class estimate_unavailable(Exception):
 
 
 # The reason of a member the records cannot answer for, by the code plugin-hostd gives it in the list
-REASONS = {-533: "no record", -534: "no grid point at this rate and quantum", -535: "not installed"}
+# (the numbers are plugin-hostd's: looked up by name in its protocol file)
+REASON_TEXTS = {"NO_RECORD": "no record", "NO_CELL": "no grid point at this rate and quantum",
+                "UNKNOWN_PLUGIN": "not installed"}
+
+
+def reason(code):
+    """The words for the code of a member the records cannot answer for; 'code <n>' for any other."""
+    from zyngine import zynthian_plugin_hostd_protocol
+    codes = zynthian_plugin_hostd_protocol.protocol().codes
+    for name, text in REASON_TEXTS.items():
+        if codes.get(name) == code:
+            return text
+    return "code %d" % code
 
 
 def parse(text):
@@ -53,7 +65,7 @@ def footer(est):
     if est["unknown"]:
         text += ", %d unknown" % est["unknown"]
         if est["members"]:
-            text += " (" + ", ".join(f"member {i + 1}: {REASONS.get(c, 'code %d' % c)}"
+            text += " (" + ", ".join(f"member {i + 1}: {reason(c)}"
                                      for i, c in sorted(est["members"].items())) + ")"
     return text
 
