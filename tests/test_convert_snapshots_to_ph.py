@@ -87,8 +87,8 @@ class converter_case(unittest.TestCase):
         for zs3 in ("zs3-0", "zs3-1"):
             was, now = old["zs3"][zs3]["processors"]["2"], new["zs3"][zs3]["processors"]["2"]
             self.assertEqual(now["controllers"], was["controllers"], f"{zs3}: the same values and MIDI learn")
-            self.assertEqual(now["preset_info"], ["urn:zamaudio:ZamComp#preset002", None, "Gentle", ""])
-            self.assertEqual(now["bank_info"], ["", None, "Presets", None])
+            self.assertEqual(now["preset_info"], ["urn:zamaudio:ZamComp#preset002", None, "Gentle", "factory"])
+            self.assertEqual(now["bank_info"], ["factory", None, "Factory", None])
         self.assertEqual(new["zs3"]["zs3-0"]["processors"]["1"], old["zs3"]["zs3-0"]["processors"]["1"])
         # Everything that is not a JV processor is the same document
         for key in ("schema_version", "last_snapshot_fpath", "gui", "zynseq", "last_zs3_id"):
@@ -97,6 +97,12 @@ class converter_case(unittest.TestCase):
         self.assertIn("converted  processor 2 JV/ZamComp -> PH/ZamComp (urn:zamaudio:ZamComp)", report)
         self.assertIn("left       processor 1: ZY is not a jalv plugin", report)
         self.assertIn("1 snapshots read, 1 written; 1 processors converted, 1 left as they are", report)
+
+    def test_a_preset_saved_under_jalv_goes_to_the_user_bank(self):
+        user = "file:///zynthian/zynthian-my-data/presets/lv2/ZamComp.presets.lv2/Mine.ttl"
+        state = conv.ph_processor_state({"preset_info": [user, None, "Mine", None], "bank_info": ["x", None, "x", None]})
+        self.assertEqual((state["preset_info"], state["bank_info"]), ([user, None, "Mine", "user"], ["user", None, "User", None]))
+        self.assertIsNone(conv.ph_processor_state({"preset_info": None})["preset_info"])
 
     def test_a_directory_and_every_reason_to_stay(self):
         code, report = self.run_tool(self.dir)
