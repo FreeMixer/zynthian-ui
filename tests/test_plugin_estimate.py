@@ -7,11 +7,14 @@
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
 
+import os
+import sys
 import time
 import unittest
 
-from test_engine_plugin_hostd import plugin_hostd_case, ph
-from zyngine import zynthian_plugin_hostd_estimate as est
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_engine_plugin_hostd import plugin_hostd_case, ph  # noqa: E402
+from zyngine import zynthian_plugin_hostd_estimate as est  # noqa: E402
 
 
 def wait_for(estimator, timeout=5.0):

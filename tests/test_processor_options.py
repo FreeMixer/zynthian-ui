@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 #
-# The processor options screen (zyngui/zynthian_gui_processor_options.py) lists a Grouping entry for a
-# plugin-hostd plugin the daemon's plan left alone, with the text of the reason, and none for any other
-# processor. The base screens are stand-ins; the screen code is the real one.
+# The processor options screen (zyngui/zynthian_gui_processor_options.py) lists Show or Hide plugin window for a
+# plugin-hostd plugin that has a window of its own, and a Grouping entry for one the daemon's plan left alone, with
+# the text of the reason; none for any other processor. The base screens are stand-ins; the screen code is the real
+# one.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
@@ -77,6 +78,9 @@ class processor_options_grouping(unittest.TestCase):
 
     def test_an_engine_that_does_not_group_lists_nothing(self):
         self.assertEqual(self.entries(types.SimpleNamespace())[1], [])
+
+
+class processor_options_window(unittest.TestCase):
 
     def window_rows(self, engine):
         screen = screen_module.zynthian_gui_processor_options.__new__(screen_module.zynthian_gui_processor_options)

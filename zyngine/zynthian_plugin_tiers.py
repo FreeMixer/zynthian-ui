@@ -3,7 +3,7 @@
 # ZYNTHIAN PROJECT: plugin tiers (zynthian_plugin_tiers)
 #
 # The rules that turn what qualification found about a plugin into its place in the plugin menus:
-# a tier word, a short tag after its name, and whether it is below our bar.
+# a tier word, a short tag after its name, and whether it is below the bar.
 #
 #   pin / found                 RT-safe  worst latency  soak       tier        tag                       below bar
 #   no record                   -        -              -          unverified  not qualified             no
@@ -28,7 +28,7 @@
 # clap:<path>#<id> one for a CLAP row. A run with interposer events or process errors is RT-alone
 # even where the allocation, lock and syscall counts read zero.
 #
-# live is the OpenMixer catalog's gate: RT-safe and a measured latency of at most LIVE_MAX_MS
+# live is the gate of the plugin catalogue: RT-safe and a measured latency of at most LIVE_MAX_MS
 # (5 ms, ZYNTHIAN_PLUGIN_LIVE_MS), read at the worst measured rate so a rate change does not move a
 # plugin between tiers.
 #

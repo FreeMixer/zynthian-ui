@@ -27,7 +27,9 @@ import importlib.util
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA_VERSION = 5  # zynthian_legacy_snapshot.SNAPSHOT_SCHEMA_VERSION
-PH_BANK = ["", None, "Presets", None]  # the one bank zynthian_engine_plugin_hostd lists
+# the banks zynthian_engine_plugin_hostd lists: Factory, and User for the presets Zynthian saved under jalv
+FACTORY_BANK = ["factory", None, "Factory", None]
+USER_BANK = ["user", None, "User", None]
 
 
 def load_module(name):
@@ -60,14 +62,17 @@ def why_not(eng_code, engines):
 
 
 def ph_processor_state(state):
-    """A jalv processor's zs3 state for the PH engine: controllers as they are, the preset by its URL."""
+    """A jalv processor's zs3 state for the PH engine: controllers as they are, the preset by its URL, in the bank
+    the engine lists it in: User for a preset saved under jalv (a file in presets/lv2), Factory for the others."""
     state = dict(state)
     preset = state.get("preset_info")
-    if preset and preset[0]:
-        state["preset_info"] = [preset[0], None, preset[2] if len(preset) > 2 else preset[0], ""]
+    url = preset[0] if preset and isinstance(preset[0], str) else ""
+    bank = USER_BANK if url.startswith("file://") and "/presets/lv2/" in url else FACTORY_BANK
+    if url:
+        state["preset_info"] = [url, None, preset[2] if len(preset) > 2 else url, bank[0]]
     else:
         state["preset_info"] = None
-    state["bank_info"] = list(PH_BANK)
+    state["bank_info"] = list(bank)
     state["bank_subdir_info"] = None
     state["preset_subdir_info"] = None
     return state

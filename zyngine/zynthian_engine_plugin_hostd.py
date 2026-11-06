@@ -226,7 +226,7 @@ class plugin_hostd_daemon:
 
     def __init__(self, port=DEFAULT_PORT):
         self.client = plugin_hostd_client(port)
-        self.lock = threading.RLock()  # the estimate is asked from a thread of its own, on the one connection
+        self.lock = threading.RLock()  # the watch and the estimate ask from threads of their own, on the one connection
         self.start_script = START_SCRIPT
         self.conf = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_CONF",
                                    os.path.join(zynthian_engine.config_dir, "plugin-hostd.conf"))
@@ -480,7 +480,7 @@ def unwrap(member):
     return member.value if isinstance(member, member_info) else member
 
 
-MONO_IN_STEREO = (0, 26, 1)  # the omx-clap-host that runs it, for a worker that declares nothing, omx-clap-core#447
+MONO_IN_STEREO = (0, 26, 1)  # the omx-clap-host that runs it, for a worker that declares nothing
 mono_in_stereo_cache = {}  # worker binary => whether it does
 
 
@@ -495,7 +495,7 @@ def worker_says(worker, option):
 
 def mono_in_stereo(worker="omx-clap-host"):
     """Detect once whether the installed worker runs a member of 1 channel in and out inside a stereo chain, its input
-    the sum of both channels and its output given to both (omx-clap-core#447), the way zynautoconnect wires a mono
+    the sum of both channels and its output given to both, the way zynautoconnect wires a mono
     plugin between stereo ones. The worker's --capabilities says it; a worker whose --help lists no such option is
     judged by its version. An older worker refuses that chain (OMX_CLAP_CHAIN_ERR_WIDTH)."""
     if worker not in mono_in_stereo_cache:
@@ -1025,7 +1025,7 @@ layout_help = {}  # omx-panel binary => what its `layout --help` says, to know t
 
 def panel_takes(panel, option):
     """Detect once whether the installed omx-panel's layout takes an option: --per-page (pages of the Zynthian's four
-    encoders, omx-panel#93), --easy-first (the Easy controls first)."""
+    encoders), --easy-first (the Easy controls first)."""
     if panel not in layout_help:
         try:
             out = subprocess.run([panel, "layout", "--help"], capture_output=True, text=True, timeout=30)
@@ -1266,7 +1266,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         """Show the plugin's window on the display, or hide it. Returns the reply text when the daemon refuses."""
         verb = "hide_external_ui" if self.window_shown() else "show_external_ui"
         try:
-            reply = daemon.call(f"{verb} {self.instance}")
+            daemon.call(f"{verb} {self.instance}")
         except FAILURES as e:
             logging.error(f"plugin-hostd {e}")
             return str(e)
@@ -1555,7 +1555,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         return rows
 
     # ---- Presets ----
-    # Every plugin shows the same two banks, whatever its format (plugin-hostd#269): Factory, the presets the
+    # Every plugin shows the same two banks, whatever its format: Factory, the presets the
     # plugin ships, and User, the user's; plain names, sorted by name, the same save, rename and delete. The format is
     # only in a preset's key: an LV2 preset's URI (its bundle's, or a user preset Zynthian saved under jalv, from
     # zynthian_lv2's cache), a key of the daemon's preset_get for a CLAP preset, or the path of a preset file the worker
