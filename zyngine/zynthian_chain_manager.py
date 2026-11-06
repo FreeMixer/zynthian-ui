@@ -24,6 +24,7 @@
 # ****************************************************************************
 
 import logging
+from time import sleep
 
 # Zynthian specific modules
 import zynautoconnect
@@ -36,6 +37,7 @@ from zyngine.zynthian_engine_jalv import *
 from zyngine.zynthian_engine_pianoteq import *
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine.zynthian_processor import zynthian_processor
+from zyngine.zynthian_controller import zynthian_controller
 from zyngine import zynthian_state_manager
 from zyngui import zynthian_gui_config
 
