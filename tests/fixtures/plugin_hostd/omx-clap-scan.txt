@@ -1,0 +1,24 @@
+file /usr/lib/clap/lsp-plugins.clap
+  plugin in.lsp-plug.limiter_mono "Limiter Mono" vendor LSP CLAP version 1.0.33
+    features audio-effect limiter mono
+    param 1574856808 Threshold [-48 .. 0] default 0 automatable,requires_process
+    param 2849352001 Gain boost [0 .. 1] default 1 stepped,automatable,requires_process
+    in  main 1 channels unknown "mono_in" in_1
+    out main 1 channels unknown "mono_out" out_1
+    note ports 0 in, 0 out
+file /usr/lib/clap/test.clap
+  plugin org.test.synth "Test \"Pad\" Synth" vendor Test Vendor Inc version 2.1
+    features instrument synthesizer stereo
+    param 1 Cutoff [0 .. 1] default 0.5 automatable
+    param 2 Wave [0 .. 3] default 0 stepped,automatable
+    out main 1 channels unknown "out" out_1
+    note ports 1 in, 0 out
+  plugin org.test.arp "Arp" vendor Test version 1
+    features note-effect
+    note ports 1 in, 1 out
+file /usr/lib/clap/broken.clap
+  error: dlopen failed: undefined symbol
+file /usr/lib/clap/crashy.clap
+  plugin org.test.crashy "Crashy" vendor Test version 1
+    features audio-effect
+    error: plugin failed to create or init

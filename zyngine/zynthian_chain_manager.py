@@ -35,6 +35,7 @@ from zyngine import zynthian_lv2
 from zyngine.zynthian_chain import *
 from zyngine.zynthian_engine_jalv import *
 from zyngine.zynthian_engine_pianoteq import *
+from zyngine.zynthian_plugin_hostd_catalogue import add_catalogue as plugin_hostd_catalogue
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine.zynthian_processor import zynthian_processor
 from zyngine.zynthian_controller import zynthian_controller
@@ -84,7 +85,8 @@ engine2class = {
     "MR": zynthian_engine_audio_mixer,
     "MX": zynthian_engine_alsa_mixer,
     "TP": zynthian_engine_tempo,
-    'CL': zynthian_engine_clippy
+    'CL': zynthian_engine_clippy,
+    'PH': zynthian_engine_plugin_hostd
 }
 
 # ----------------------------------------------------------------------------
@@ -188,6 +190,8 @@ class zynthian_chain_manager:
             "ENGINE": zynthian_engine_tempo,
             "ENABLED": False
         }
+        # LV2 and CLAP plugins run by plugin-hostd
+        plugin_hostd_catalogue(cls.engine_info)
         # Look for an engine class for each one
         for key, info in cls.engine_info.items():
             try:
@@ -1099,10 +1103,19 @@ class zynthian_chain_manager:
                 self.remove_processor(chain_id, chain.synth_slots[0][0])   # Cannot have multiple synth engines
             chain.insert_processor(processor, slot)
 
-        engine = self.start_engine(processor, eng_code, eng_config)
+        try:
+            engine = self.start_engine(processor, eng_code, eng_config)
+        except Exception as e:
+            # The engine refused the processor (plugin-hostd's add answered an error): undo the insert
+            processor.engine = None  # the engine never took it
+            logging.error(f"Can't add processor '{eng_code}' to chain {chain_id}: {e}")
+            engine = None
         if not engine:
-            # Failed!! => Remove processor from list
-            del self.processors[proc_id]
+            # Failed!! => Remove processor from list, and from the chain it was inserted in
+            if chain_id is not None and processor in self.chains[chain_id].get_processors():
+                self.chains[chain_id].remove_processor(processor)
+            self.zyngines.pop(f"PH#{proc_id}", None)
+            self.processors.pop(proc_id, None)
             self.state_manager.end_busy("add_processor")
             return None
 
@@ -1429,6 +1442,10 @@ class zynthian_chain_manager:
             if eng_code[0:3] == "JV/":
                 eng_key = f"JV/{self.zyngine_counter}"
                 zyngine = zynthian_engine_class(eng_code, self.state_manager, False)
+            elif eng_code[0:3] == "PH/":
+                # One engine per processor, keyed by processor so a snapshot finds its state again
+                eng_key = f"PH#{processor.id}"
+                zyngine = zynthian_engine_class(eng_code, self.state_manager)
             elif eng_code in ("SF", "PD"):
                 eng_key = f"{eng_code}/{self.zyngine_counter}"
                 zyngine = zynthian_engine_class(self.state_manager)
@@ -1460,7 +1477,7 @@ class zynthian_chain_manager:
     def stop_unused_single_proc_engines(self):
         """Stop engines that need restart and are not used by any processors"""
         for eng_key in list(self.zyngines.keys()):
-            if not self.zyngines[eng_key].processors and (eng_key[0:3] == "JV/" or eng_key in self.single_processor_engines):
+            if not self.zyngines[eng_key].processors and (eng_key[0:3] in ("JV/", "PH#") or eng_key in self.single_processor_engines):
                 logging.debug(f"Stopping Unused Jalv Engine '{eng_key}'...")
                 self.state_manager.set_busy_details(f"stopping engine {self.zyngines[eng_key].get_name()}")
                 self.zyngines[eng_key].stop()
@@ -1580,7 +1597,7 @@ class zynthian_chain_manager:
                         if proc_id == str(zynthian_state_manager.MAIN_MIXBUS_ID):
                             continue  # Do not replace main mixbus audio mixer processor
                         try:
-                            eng_config = engine_config[eng_code]
+                            eng_config = engine_config.get(f"PH#{proc_id}") or engine_config[eng_code]
                         except:
                             eng_config = None
                         # TODO: insert in correct slot, accounting for slot being relative to subchain type
