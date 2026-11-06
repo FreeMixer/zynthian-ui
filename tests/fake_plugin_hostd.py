@@ -16,6 +16,14 @@ import json
 import socket
 import threading
 import time
+import importlib.util
+
+# the words of a line and the key of a pin are the engine's own module's (the grammar of plugin-hostd-protocol), loaded
+# by path: the fake also runs as a program, without the zyngine package
+_spec = importlib.util.spec_from_file_location(
+    "phd_words", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "zyngine", "zynthian_plugin_hostd_protocol.py"))
+grammar = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(grammar)
 
 # The plugins it knows: each parameter (unit, scale, min, max, default), whether param_info
 # answers for it, the presets it lists and what loading one sets.
@@ -31,6 +39,10 @@ PLUGINS = {
     "clap:/usr/lib/clap/test.clap#org.test.remote": {
         "params": {str(i): ("-", "linear", 0.0, 1.0, 0.5) for i in range(1, 13)}, "info": False, "presets": None,
         "remote": [("Global", "Macros", ["3", "1", "-", "2"]), ("Scene A", "Mixer", ["12", "1"])]},
+    "clap:/usr/lib/clap/Surge XT.clap#org.test.surge": {
+        "params": {"1": ("-", "linear", 0.0, 1.0, 0.5)}, "info": False, "presets": None},
+    "clap:/usr/lib/clap/Two  Spaces.clap#org.test.two": {
+        "params": {"1": ("-", "linear", 0.0, 1.0, 0.5)}, "info": False, "presets": None},
     "urn:test:big": {"params": {f"p{i}": ("Hz", "linear", 0.0, 100.0, 10.0) for i in range(10)},
                      "info": False, "presets": None},
 }
@@ -181,7 +193,7 @@ class fake_plugin_hostd:
         if self.journal:
             with open(self.journal, "a") as f:
                 f.write(f"{os.getpid()} {line}\n")
-        w = line.split()
+        w = grammar.words(line)
         verb, args = w[0], w[1:]
         try:
             method = getattr(self, "verb_" + verb, None)
@@ -229,6 +241,7 @@ class fake_plugin_hostd:
         plugin without a record counts as unknown and adds nothing."""
         if not refs:
             return "resp -902"
+        refs = tuple(grammar.pin_key(r) for r in refs)
         known = [self.ESTIMATES.get(r) for r in refs]
         have = [k for k in known if k]
         lost = ",".join(f"{i}:-533" for i, k in enumerate(known) if not k) or "-"
@@ -295,10 +308,12 @@ class fake_plugin_hostd:
     REFUSED = set()
 
     def verb_pin_accept(self, uri):
+        uri = grammar.pin_key(uri)
         self.accepted = getattr(self, "accepted", set()) | {uri}
         return "resp 0"
 
     def verb_add(self, uri, instance, *rest):
+        uri = grammar.pin_key(uri)
         n = int(instance)
         if n in self.instances:
             return "resp -2"
@@ -392,7 +407,7 @@ class fake_plugin_hostd:
             with open(path) as f:
                 doc = json.load(f)
         doc.update({"format": "org.openmixer.preset/2", "plugin": {"id": self.instances[n], "version": "1",
-                    "fingerprint": "omx-layout/1:" + "0" * 64}, "name": " ".join(name).strip('"'), "carries": "params",
+                    "fingerprint": "omx-layout/1:" + "0" * 64}, "name": " ".join(name), "carries": "params",
                     "params": [{"symbol": s, "unit": "", "value": v} for s, v in self.params[n].items()]})
         with open(path, "w") as f:
             json.dump(doc, f)
@@ -451,6 +466,7 @@ class fake_plugin_hostd:
         return "resp 0"
 
     def verb_descriptor_get(self, uri):
+        uri = grammar.pin_key(uri)
         if uri not in self.descriptors:
             return "resp -529"
         if self.descriptors[uri] is None:  # a scan that wrote nothing

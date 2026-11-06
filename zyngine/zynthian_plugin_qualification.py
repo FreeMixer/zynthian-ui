@@ -20,6 +20,8 @@ import json
 import logging
 from collections import namedtuple
 
+from zyngine import zynthian_plugin_hostd_protocol
+
 DOCUMENT_FORMAT = "lv2-plugin-measurements"
 RECORD_SCHEMA = "plugin-qualify.qualification-record/1"
 PIN_VERDICTS = ("in-process", "isolated", "refused")  # plugin-hostd's PHD_PIN_VERDICTS
@@ -51,7 +53,10 @@ def qualification_dir():
     return setting("ZYNTHIAN_QUALIFICATION_DIR", setting("OMX_QUALIFICATION_DIR", "/var/lib/omx/qualification"))
 
 
-PINS_DIR = "/usr/share/plugin-hostd/pins.d"
+def pins_dir():
+    """The pins_dir plugin-hostd reads: the default its installed protocol file declares for the key; None when the
+    file is not there."""
+    return zynthian_plugin_hostd_protocol.config_default("pins_dir") or None
 
 
 def conf_pin_file():
@@ -63,7 +68,7 @@ def conf_pin_file():
     try:
         with open(conf) as f:
             for line in f:
-                words = line.split()
+                words = zynthian_plugin_hostd_protocol.words(line)
                 if len(words) >= 2 and words[0] == "pin_file":
                     return words[1]
     except OSError:
@@ -78,7 +83,7 @@ def pin_paths():
     if paths:
         return [p for p in paths.split(":") if p]
     pin_file = conf_pin_file()
-    return [PINS_DIR] + ([pin_file] if pin_file else [])
+    return [d for d in (pins_dir(), pin_file) if d]
 
 
 # ---- Reading ----
@@ -100,14 +105,14 @@ def read_pins(paths):
             logging.warning(f"Can't read pin file {path} => {e}")
             continue
         for n, line in enumerate(lines, 1):
-            words = line.split()
+            words = zynthian_plugin_hostd_protocol.words(line)
             if len(words) < 4 or words[0] != "pin_set":
                 continue
             verdict = next((w[8:] for w in words[4:] if w.startswith("verdict=")), None)
             if verdict is not None and verdict not in PIN_VERDICTS:
                 logging.warning(f"{path}:{n}: verdict={verdict} is not one of {', '.join(PIN_VERDICTS)}: not read")
                 verdict = None
-            pins[words[1]] = verdict
+            pins[zynthian_plugin_hostd_protocol.pin_key(words[1])] = verdict
     return pins
 
 

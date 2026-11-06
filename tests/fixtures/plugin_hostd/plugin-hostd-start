@@ -16,8 +16,14 @@ with open(os.environ["START_STUB_LOG"], "a") as f:
 if os.environ.get("START_STUB_FAIL"):
     sys.stderr.write(os.environ["START_STUB_FAIL"] + "\n")
     sys.exit(1)
-with open(os.path.join(here, "protocol", "protocol.json")) as f:
-    ready = json.load(f)["readiness"]["daemon_line"]
+# the line the installed plugin-hostd declares it prints when ready, read as the engine's module reads the files
+import importlib.util
+spec = importlib.util.spec_from_file_location(
+    "phd_protocol", os.path.join(os.path.dirname(os.path.dirname(here)), "..", "zyngine", "zynthian_plugin_hostd_protocol.py"))
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+directory, name = module.daemon_file()
+ready = module.read(name, directory)[0]["readiness"]["daemon_line"]
 log = os.path.join(os.environ["START_STUB_DIR"], f"plugin-hostd-{sys.argv[1]}.log")
 with open(log, "wb") as out:
     proc = subprocess.Popen([fake, "-n", "-p", sys.argv[1]], stdin=subprocess.DEVNULL, stdout=out, stderr=out)
