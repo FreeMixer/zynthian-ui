@@ -915,7 +915,7 @@ class zynthian_gui:
         self.screens['loading'].set_error(title)
 
     def set_loading_warning(self, title):
-        self.screens['loading'].set_waning(title)
+        self.screens['loading'].set_warning(title)
 
     def set_loading_success(self, title):
         self.screens['loading'].set_success(title)
