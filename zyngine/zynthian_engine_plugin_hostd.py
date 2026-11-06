@@ -1151,7 +1151,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             logging.warning(f"Can't read the qualification of {self.plugin_uri} => {e}")
             return None
         reason = zynthian_plugin_tiers.place(facts).reason
-        if reason == "refused":
+        if reason == "refused" and zynthian_plugin_tiers.plugin_bar() != "qualified-only":
+            # qualified-only is the user saying no to plugins below the bar: the pin stays refused and the add says why
             daemon.accept_below_bar(self.plugin_uri)
         return "own" if reason in ISOLATE_REASONS or facts.rt_safe is False else None
 

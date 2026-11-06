@@ -310,8 +310,8 @@ class pi5_records(unittest.TestCase):
                          [("Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked", False),
                           ("Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked", False),
                           ("None (PH)  not qualified", False),
-                          ("3 Band EQ (PH)  below bar · refused", False),
-                          ("3 Band Splitter (PH)  below bar · refused", False)])
+                          ("3 Band EQ (PH)  below bar · refused", tiers.BELOW),
+                          ("3 Band Splitter (PH)  below bar · refused", tiers.BELOW)])
         qualified = tiers.menu_entries(engines, lambda url: self.q.facts(url, 48000), bar="qualified-only")
         self.assertEqual([text for _, text, _ in qualified], ["Art Delay (PH)  live 1/0fr RT-ok cost? unsoaked",
                                                              "Art Delay LV2 (PH)  studio lat? RT-ok cost? unsoaked"])
@@ -324,7 +324,7 @@ class pi5_records(unittest.TestCase):
         # the jalv row is there only when the user lists jalv: plugin-hostd's pin does not judge it
         self.assertEqual([(text, grey) for _, text, grey in rows],
                          [("Fast (PH)  live 48fr RT-ok cost?", False), ("Refused  not qualified", False),
-                          ("ZynAddSubFX", False), ("Refused (PH)  below bar · refused", False)])
+                          ("ZynAddSubFX", False), ("Refused (PH)  below bar · refused", tiers.BELOW)])
         self.assertEqual(tiers.menu_entries(engines, lambda url: facts.get(url, NO_FACTS), bar="load-all"), rows)
 
     def test_an_entry_the_catalogue_marks_not_working_is_listed_greyed_with_its_word(self):
@@ -477,9 +477,9 @@ class menu_order(unittest.TestCase):
             ("PH/Alloc", "Alloc Verb (PH)  studio 0fr RT-alone cost?", False),
             ("PH/None", "Untested Chorus (PH)  not qualified", False),
             ("AP", "Audio Player", False),
-            ("PH/Crashed", "Crashy Delay (PH)  below bar · crashed", False),
-            ("PH/Refused", "Refused Amp (PH)  below bar · refused", False),
-            ("PH/Hung", "Stuck Pitch (PH)  below bar · hung", False),
+            ("PH/Crashed", "Crashy Delay (PH)  below bar · crashed", tiers.BELOW),
+            ("PH/Refused", "Refused Amp (PH)  below bar · refused", tiers.BELOW),
+            ("PH/Hung", "Stuck Pitch (PH)  below bar · hung", tiers.BELOW),
         ])
         self.assertEqual(self.entries("load-all"), self.entries("warn-on-crashes"))
 

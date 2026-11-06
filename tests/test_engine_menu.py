@@ -43,7 +43,7 @@ class selector:
 
 
 def load_screen():
-    gui_config = stand_in("zyngui.zynthian_gui_config", color_tx_off="#grey", color_panel_bg="#bg",
+    gui_config = stand_in("zyngui.zynthian_gui_config", color_tx_off="#grey", color_warn="#warn", color_panel_bg="#bg",
                           color_panel_tx="#tx", layout={"ctrl_order": []})
     modules = {
         "tkinter": stand_in("tkinter", END="end"),
@@ -111,7 +111,8 @@ class engine_menu(unittest.TestCase):
         self.assertEqual(self.build(), ["Fast Comp (PH)  live 0fr RT-ok 40ns", "Linear EQ (PH)  studio 1024fr RT-ok cost?",
                                         "Refused Amp (PH)  below bar · refused"])
         self.assertEqual(self.screen.engine_cats, ["Dynamics", "Delay"])
-        self.screen.listbox.itemconfig.assert_not_called()
+        # nothing is greyed; the one below the bar is painted in the warning colour
+        self.screen.listbox.itemconfig.assert_called_once_with(2, {'fg': "#warn"})
 
     def test_qualified_only_lists_what_passed(self):
         self.assertEqual(self.build("qualified-only"), ["Fast Comp (PH)  live 0fr RT-ok 40ns",
