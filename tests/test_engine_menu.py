@@ -25,6 +25,7 @@ if "zyngine" not in sys.modules:
     _pkg.__path__ = [os.path.join(ROOT, "zyngine")]
     sys.modules["zyngine"] = _pkg
 from zyngine import zynthian_plugin_qualification as qual  # noqa: E402
+import test_engine_plugin_hostd  # noqa: E402,F401  the stand-ins of the native libraries, for the engine the screen imports
 
 
 def stand_in(name, **attrs):

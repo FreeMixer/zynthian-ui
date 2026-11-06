@@ -3,7 +3,7 @@
 # A screen is driven through the GUI's table (self.screens['x'] in zynthian_gui.py, self.zyngui.screens["x"]
 # elsewhere): every method called through it must be one the screen's class defines or inherits. Source level,
 # so it holds where tkinter and the native libraries are absent. CUIA CHAIN_OPTIONS called setup(), a method the
-# chain options screen no longer has (#22).
+# chain options screen no longer has.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later

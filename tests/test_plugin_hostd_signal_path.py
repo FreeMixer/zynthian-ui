@@ -678,7 +678,7 @@ class test_a_run_ends_where_the_width_changes(signal_path_case):
 
 
 class test_a_mono_effect_runs_inside_a_stereo_run(test_a_run_ends_where_the_width_changes):
-    """A worker that declares mono_in_stereo (omx-clap-host 0.26.1 or later) runs a mono member inside a stereo chain (omx-clap-core#447): its input
+    """A worker that declares mono_in_stereo (omx-clap-host 0.26.1 or later) runs a mono member inside a stereo chain: its input
     the sum of both channels, its output given to both, as zynautoconnect wires a mono plugin between stereo ones, so
     the mono effect joins the stereo run instead of splitting it. A stereo member after a mono head still heads its own."""
 

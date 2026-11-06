@@ -17,7 +17,6 @@ import signal
 import socket
 import logging
 import tempfile
-import threading
 import unittest
 from unittest import mock
 
@@ -41,7 +40,7 @@ if "zyngine" not in sys.modules:
 # zynthian_lv2 needs lilv: a stand-in that knows the ports of one plugin
 LV2_PORTS = {"urn:test:amp": {0: {"symbol": "gain", "name": "Gain", "range": {"min": -90, "max": 90}, "value": 0,
                                   "is_integer": False, "is_toggled": False}}}
-# One stand-in per process: test_convert_snapshots_to_ph imports this file again under its bare name, and the
+# One stand-in per process: other test files import this one again under its bare name, and the
 # catalogue must see the same registry as every copy of these tests
 _lv2 = sys.modules.get("zyngine.zynthian_lv2")
 if _lv2 is None:
@@ -107,7 +106,7 @@ class plugin_hostd_case(unittest.TestCase):
         self.starts = os.path.join(self.tmp, "starts")
         patcher = mock.patch.dict(os.environ, {
             "PATH": self.bin, "FAKE_HOSTD_JOURNAL": os.path.join(self.tmp, "journal"),
-            "START_STUB_LOG": self.starts, "START_STUB_DIR": self.tmp})
+            "START_STUB_LOG": self.starts, "START_STUB_DIR": self.tmp, "ZYNTHIAN_PLUGIN_ENGINE": "plugin-hostd"})
         patcher.start()
         self.addCleanup(patcher.stop)
         self.port = free_port()
@@ -229,8 +228,8 @@ class test_daemon(plugin_hostd_case):
             client.call("frobnicate 1")
         self.assertEqual((refused.exception.code, refused.exception.name), (-902, "ERR_INVALID_OPERATION"))
         with self.assertRaises(ph.plugin_hostd_error) as refused:
-            client.call("chain_get 7")
-        self.assertEqual(refused.exception.name, "PHD_ERR_NO_SUCH_CHAIN")
+            client.call("descriptor_get urn:test:none")
+        self.assertEqual(refused.exception.name, "PHD_ERR_DESCRIPTOR_ABSENT")
         self.assertEqual(ph.plugin_hostd_error(-501, "x").name, "PHD_ERR_PLACEMENT_INVALID")
         self.assertEqual(ph.plugin_hostd_error(-531, "x").name, "PHD_ERR_DESCRIPTOR_SCAN_FAILED")
 
@@ -342,16 +341,16 @@ class test_protocol(plugin_hostd_case):
 
     def test_a_name_the_engine_branches_on_and_the_files_do_not_declare_is_a_failure(self):
         declared = [{"name": n, "macro": "PHD_ERR_" + n, "code": -700 - i} for i, n in enumerate(ph.NEEDS)
-                    if n != "CHAIN_MIXED_FORMAT" and not n.startswith("ERR_")]
+                    if n != "DESCRIPTOR_PENDING" and not n.startswith("ERR_")]
         host = [{"name": n, "value": -800 - i} for i, n in enumerate(ph.NEEDS) if n.startswith("ERR_")]
         with self.assertLogs(level=logging.ERROR):
             p = ph.zynthian_plugin_hostd_protocol.protocol(self.declared(declared, host_errors=host), needs=ph.NEEDS)
         self.assertFalse(p.loaded)
-        self.assertIn("do not declare CHAIN_MIXED_FORMAT", p.failure)
+        self.assertIn("do not declare DESCRIPTOR_PENDING", p.failure)
         with mock.patch.object(ph, "protocol", p):
             with self.assertRaises(ph.plugin_hostd_down) as down:
                 ph.daemon.ensure()
-        self.assertIn("CHAIN_MIXED_FORMAT", str(down.exception))
+        self.assertIn("DESCRIPTOR_PENDING", str(down.exception))
 
     def test_the_engine_reads_the_files_once_at_import(self):
         with mock.patch.object(ph.zynthian_plugin_hostd_protocol, "read", side_effect=AssertionError("read again")):
@@ -1114,8 +1113,8 @@ class test_pages(plugin_hostd_case):
         self.assertFalse(os.path.exists(log), "-530 is ask again, not a missing descriptor")
 
 
-class test_easy_and_compare(plugin_hostd_case):
-    # The Easy page and Compare, whose rule and module are omx-panel's: here, only that the engine reaches them
+class test_easy(plugin_hostd_case):
+    # The Easy page, whose rule is omx-panel's: here, only that the engine reaches it
 
     def easy_plugin(self, easy=("p3", "p1")):
         with open(os.path.join(FIXTURES, "big.descriptor.json")) as f:
@@ -1148,6 +1147,12 @@ class test_easy_and_compare(plugin_hostd_case):
         self.addCleanup(os.environ.pop, "OMX_PANEL_STUB_NO_EASY", None)
         fake, proc = self.easy_plugin()
         self.assertNotEqual(proc.engine.pages()[0][0], "Easy")
+
+
+class test_compare(plugin_hostd_case):
+    # Compare A/B/C/D and undo, whose module is omx-panel's: here, only that the engine reaches it
+
+    easy_plugin = test_easy.easy_plugin
 
     def values(self, fake):
         return fake.params[1000]

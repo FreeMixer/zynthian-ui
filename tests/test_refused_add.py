@@ -2,7 +2,7 @@
 #
 # An add the engine refuses (plugin-hostd answering -509 PIN_BINARY_MISMATCH, say) leaves no processor in the chain,
 # no busy client behind and the refusal's meaning to show; a snapshot restore that meets one drops that processor,
-# finishes, and says what it left out (#18). The chain manager's own add_processor and set_state, on a real chain.
+# finishes, and says what it left out. The chain manager's own add_processor and set_state, on a real chain.
 #
 # Copyright (C) 2026 Pau Aliagas <linuxnow@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
