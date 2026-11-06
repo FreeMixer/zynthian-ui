@@ -32,6 +32,7 @@ import zynautoconnect
 from zyngine.zynthian_signal_manager import zynsigman
 from zyngine import zynthian_plugin_hostd_protocol
 from zyngine import zynthian_plugin_hostd_grouping
+from zyngine import zynthian_plugin_hostd_estimate
 from zyngine.zynthian_engine import zynthian_engine
 from zyngine.zynthian_controller import zynthian_controller
 from zyngine.zynthian_plugin_hostd_catalogue import clap_plugins
@@ -217,7 +218,7 @@ class plugin_hostd_daemon:
 
     def __init__(self, port=DEFAULT_PORT):
         self.client = plugin_hostd_client(port)
-        self.lock = threading.RLock()  # the watch asks from a thread of its own, on the one connection
+        self.lock = threading.RLock()  # the watch and the estimate ask from threads of their own, on the one connection
         self.start_script = START_SCRIPT
         self.conf = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_CONF",
                                    os.path.join(zynthian_engine.config_dir, "plugin-hostd.conf"))
@@ -232,6 +233,8 @@ class plugin_hostd_daemon:
         self.plan_verbs = None  # whether the daemon answers plan: None until it was asked
         self.grouping = None  # False once a plan came back with grouping-off; None while that is not known
         self.bulk_verbs = None  # whether the daemon answers param_get_many and param_set_many: False once it refused them
+        self.estimate_verb = None  # whether the daemon answers estimate: False once it refused it, for the session
+        self.chain_figures = {}  # zynthian chain id => (steps, rate, quantum, footer text) of the chain as it is
         self.asked_at = {}  # run number => when it was last refused, or planned with a reason that can change
         self.pending = {}  # zynthian chain id => chain whose runs wait for the end of a busy section, see sync_chain
         self.synced = {}  # zynthian chain id => chain whose runs were declared, read back by the watch
@@ -542,6 +545,100 @@ def member_of(p, value):
     return member_info(value, p.engine.takes_notes(), p.engine.main_widths())
 
 
+def chain_steps(chain):
+    """signal_steps of a zynthian chain, of the plugin refs of its plugin-hostd members."""
+    return signal_steps([[member_of(p, getattr(p.engine, "plugin_uri", None)) for p in slot]
+                         for slot in audio_path_slots(chain)])
+
+
+def menu_refs(chain, eng_code, info, replacing=None):
+    """The steps to ask the estimate for while a row of the plugin menu is highlighted: the chain's with the row's
+    plugin in the place the chain options give it, in the slot of the processor being replaced, else before the mixer
+    strip for an effect, and first for anything else; [] for a row the daemon does not run, or when it has no ref."""
+    if eng_code.split("/")[0] != "PH" or not info.get("URL"):
+        return []
+    slots = [[info["URL"] if p is replacing else p.engine.plugin_uri if isinstance(p.engine, zynthian_engine_plugin_hostd)
+              else None for p in slot] for slot in (audio_path_slots(chain) if chain else ())]
+    if replacing is None or not any(info["URL"] in slot for slot in slots):
+        at = 0
+        if info.get("TYPE") == "Audio Effect":
+            strips = [i for i, slot in enumerate(audio_path_slots(chain) if chain else ())
+                      if slot and slot[0].eng_code in ("MI", "MR")]
+            at = strips[0] if strips else len(slots)
+        slots.insert(at, [info["URL"]])
+    return signal_steps(slots)
+
+
+def estimate(rate, quantum, refs):
+    """The daemon's figures for a chain of these plugin refs at this rate and quantum, from its qualification
+    records: plugin_hostd_estimate.parse's dict. estimate_unavailable once the daemon has refused the verb as
+    mod-host does, and for the rest of the session, so it is not asked again; a refusal of the question itself
+    (a plugin it does not know) is a plugin_hostd_error, and no figure."""
+    if daemon.estimate_verb is False:
+        raise zynthian_plugin_hostd_estimate.estimate_unavailable()
+    try:
+        reply = daemon.call(f"estimate {rate} {quantum} {' '.join(refs)}")[1]
+    except plugin_hostd_error as e:
+        if e.code == protocol.code("ERR_INVALID_OPERATION"):
+            daemon.estimate_verb = False
+            logging.warning("plugin-hostd does not answer estimate: no chain figures this session")
+            raise zynthian_plugin_hostd_estimate.estimate_unavailable()
+        raise
+    daemon.estimate_verb = True
+    return zynthian_plugin_hostd_estimate.parse(reply)
+
+
+def estimate_steps(rate, quantum, steps):
+    """The figures of a chain as signal_steps gives it, one estimate for each branch: a branch is what one worker
+    runs. Latency adds along the steps, and a step takes its longest branch; everything else adds up. A member the
+    records lack is named by its place among all of them. plugin_hostd_estimate.parse's dict."""
+    total = {"latency": 0, "cpu": 0.0, "ram": 0, "workers": 0, "unknown": 0, "members": {}}
+    place = 0
+    for step in steps:
+        longest = 0
+        for branch in step:
+            est = estimate(rate, quantum, branch)
+            longest = max(longest, est["latency"])
+            total["cpu"] += est["cpu"]
+            total["ram"] = None if total["ram"] is None or est["ram"] is None else total["ram"] + est["ram"]
+            total["workers"] += est["workers"]
+            total["unknown"] += est["unknown"]
+            total["members"].update({place + i: code for i, code in est["members"].items()})
+            place += len(branch)
+        total["latency"] += longest
+    return total
+
+
+def audio_format(state_manager):
+    """(rate, quantum) of the audio device, None when it does not say integers."""
+    try:
+        rate, quantum = state_manager.get_jackd_samplerate(), state_manager.get_jackd_blocksize()
+    except Exception:
+        return None
+    return (rate, quantum) if isinstance(rate, int) and isinstance(quantum, int) else None
+
+
+def figure_chain(chain, state_manager):
+    """Ask, off the caller's thread, for the figures of the chain as it is: they are in daemon.chain_figures
+    when the answer is there. The chain view shows them."""
+    steps, fmt = chain_steps(chain), audio_format(state_manager)
+    if not steps or fmt is None or daemon.estimate_verb is False:
+        daemon.chain_figures.pop(chain.chain_id, None)
+        return
+    if daemon.chain_figures.get(chain.chain_id, (None,))[0:3] == (steps, *fmt):
+        return
+
+    def ask():
+        try:
+            text = zynthian_plugin_hostd_estimate.footer(estimate_steps(fmt[0], fmt[1], steps))
+        except Exception as e:
+            logging.debug(f"plugin-hostd estimate of chain {chain.chain_id} => {e}")
+            return
+        if chain_steps(chain) == steps:  # the chain has not moved on since the question
+            daemon.chain_figures[chain.chain_id] = (steps, fmt[0], fmt[1], text)
+    threading.Thread(target=ask, daemon=True).start()
+
+
 def busy(chain):
     """Whether a busy section of the state manager is running (a snapshot load, an add, a removal): the runs are then
     declared once, when it ends (flush_pending)."""
@@ -575,13 +672,18 @@ def apply_clients(chain):
     clients = {}
     for number in daemon.runs.get(chain.chain_id, ()):
         clients.update(daemon.clients.get(number, {}))
-    changed = False
+    engines, changed = [], False
     for slot in chain.synth_slots + chain.audio_slots:
         for p in slot:
             if isinstance(p.engine, zynthian_engine_plugin_hostd) and p.engine.instance is not None:
                 jackname = clients.get(p.engine.instance, p.engine.jackname)
                 changed |= p.jackname != jackname
                 p.jackname = jackname
+                engines.append(p.engine)
+    if engines:
+        figure_chain(chain, engines[0].state_manager)
+    else:
+        daemon.chain_figures.pop(chain.chain_id, None)
     return changed
 
 

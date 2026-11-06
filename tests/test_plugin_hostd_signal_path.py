@@ -280,6 +280,70 @@ class test_mixbus(signal_path_case):
         self.assertEqual(proc.get_name(), "Amp")
 
 
+class test_figures_follow_the_signal(signal_path_case):
+    """The chain view's figures: a parallel slot's latency is its longest branch's, and each group is its own worker."""
+
+    def figures(self, chain):
+        return ph.estimate_steps(48000, 256, ph.chain_steps(chain))
+
+    def test_a_series_chain_is_asked_once(self):
+        fake = self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp"), self.add(chain, "PH/NoPin")
+        self.assertEqual(ph.chain_steps(chain), [(("urn:test:amp", "urn:test:nopin"),)])
+        self.assertEqual(self.figures(chain)["latency"], 64)
+        self.assertEqual(len([line for line in fake.lines if line.startswith("estimate ")]), 1)
+
+    def test_a_parallel_slot_takes_the_longest_latency_and_adds_the_rest(self):
+        fake = self.serve(estimator=True)
+        fake.ESTIMATES = {"urn:test:amp": (10, 1.0, 100), "urn:test:nopin": (40, 2.0, 200)}
+        chain = self.chain()
+        a, b, c = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp"), self.add(chain, "PH/NoPin")
+        self.parallel(chain, c)
+        self.assertEqual(ph.chain_steps(chain), [(("urn:test:amp",),), (("urn:test:amp",), ("urn:test:nopin",))])
+        est = self.figures(chain)
+        self.assertEqual(est["latency"], 10 + 40, "not the sum of the two branches")
+        self.assertAlmostEqual(est["cpu"], 1.0 + 1.0 + 2.0)
+        self.assertEqual(est["ram"], 400)
+        self.assertEqual(est["workers"], 3)
+
+    def test_the_strip_splits_the_figures_as_it_splits_the_workers(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.strip(chain)
+        self.add(chain, "PH/NoPin")
+        self.assertEqual(ph.chain_steps(chain), [(("urn:test:amp",),), (("urn:test:nopin",),)])
+        self.assertEqual(self.figures(chain)["workers"], 2)
+
+    def test_an_unknown_member_is_named_by_its_place_in_the_chain(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.foreign(chain)
+        self.add(chain, "PH/Big")
+        est = self.figures(chain)
+        self.assertEqual(est["unknown"], 1)
+        self.assertEqual(est["members"].keys(), {1}, "the second plugin of the chain's, not the first of its group")
+
+    def test_the_menu_counts_the_candidate_before_the_strip_where_it_will_go(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        self.add(chain, "PH/Amp")
+        self.strip(chain)
+        info = self.info["JV/NoPin"] | {"URL": "urn:test:nopin"}
+        self.assertEqual(ph.menu_refs(chain, "PH/NoPin", info), [(("urn:test:amp", "urn:test:nopin"),)])
+
+    def test_the_menu_puts_a_replacement_in_the_place_of_what_it_replaces(self):
+        self.serve(estimator=True)
+        chain = self.chain()
+        a, b = self.add(chain, "PH/Amp"), self.add(chain, "PH/Amp")
+        self.parallel(chain, b)
+        info = self.info["JV/NoPin"] | {"URL": "urn:test:nopin"}
+        self.assertEqual(ph.menu_refs(chain, "PH/NoPin", info, replacing=b),
+                         [(("urn:test:amp",), ("urn:test:nopin",))])
+
+
 def load_chain_manager():
     """The real chain manager: only the other engines, and what needs a Zynthian's native libraries, are stand-ins."""
     pkg = sys.modules["zyngine"]
