@@ -40,6 +40,9 @@ DEFAULT_PORT = int(os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_PORT", "5570"))
 FIRST_INSTANCE = 1000
 LAST_INSTANCE = 9989
 TIMEOUT = 5.0
+COMPARE_SLOTS = ("A", "B", "C", "D")  # omx-panel's COMPARE_SLOTS, the menu's rows
+COMPARE_PAUSE = 1.0  # seconds: controller moves closer than this are one undo step
+COMPARE_QUEUE = 64  # steps waiting for the next omx-panel run, its ring's bound
 SLOW_TIMEOUT = 30.0  # add, state_save and state_load spawn workers
 START_TIMEOUT = 10.0  # the wait for the daemon's declared line, in plugin-hostd-start.sh
 START_SCRIPT = os.path.join(os.environ.get("ZYNTHIAN_SYS_DIR", "/zynthian/zynthian-sys"), "sbin",
@@ -367,6 +370,12 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.instance = None
         self.preset_key = None
         self.pending_state = None
+        self.compare_doc = None  # the slots, rides the snapshot; see Compare below
+        self.compare_ring = None  # the undo steps; as the console's journal, not saved
+        self.compare_queue = []  # values to come back to, handed to omx-panel at the next step
+        self.compare_settled = {}
+        self.compare_last_move = 0.0
+        self.compare_moving = False
         self.bypass_zctrl = None
         self.zctrls = {}
         self.labels = {}
@@ -379,6 +388,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             self.instance = daemon.add(self, self.plugin_uri)
             self.jackname = f"effect_{self.instance}"
             self.zctrls = self.build_controllers()
+            self.compare_settled = self.compare_values()
             self.generate_ctrl_screens(self.zctrls)
             if self.pending_state:
                 self.load_state(self.pending_state)
@@ -652,6 +662,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     def send_controller_value(self, zctrl):
         if self.instance is not None:
             self.send(self.value_line(zctrl))
+            if zctrl is not self.bypass_zctrl:
+                self.compare_note_move(zctrl)
 
     def refresh_values(self):
         """Read every value back, after a preset or a state changed them in the plugin."""
@@ -659,6 +671,76 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         for symbol, value in values.items():
             if value:
                 self.zctrls[symbol].set_value(float(value), False)
+        self.compare_settle()
+
+    # ---- Compare ----
+    # Compare A/B/C/D and undo are omx-panel's (its docs/compare.md), one module for every host: here its command is run, its
+    # moves are sent as any controller's value and its document rides the snapshot.
+
+    def compare_values(self):
+        return {s: float(z.value) for s, z in self.zctrls.items() if z is not self.bypass_zctrl and not isinstance(z.value, str)}
+
+    def compare_settle(self):
+        """The values changed by something other than a controller: a step to come back to."""
+        values = self.compare_values()
+        if self.compare_settled and values != self.compare_settled:
+            self.compare_queue = (self.compare_queue + [self.compare_settled])[-COMPARE_QUEUE:]
+        self.compare_settled = values
+
+    def compare_note_move(self, zctrl):
+        """A controller moved. After a pause the values before it are a step to come back to; no process starts here."""
+        if self.compare_moving:
+            return
+        now = time.monotonic()
+        if now - self.compare_last_move > COMPARE_PAUSE and self.compare_settled:
+            self.compare_queue = (self.compare_queue + [dict(self.compare_settled)])[-COMPARE_QUEUE:]
+        self.compare_last_move = now
+        self.compare_settled[zctrl.symbol] = float(zctrl.value)
+
+    def compare_step(self, step):
+        """step: (op, slot) of `omx-panel compare`. None when it landed, else what went wrong, to tell the user."""
+        op, slot = step
+        panel = shutil.which("omx-panel")
+        if not panel:
+            return "omx-panel is not installed"
+        values = self.compare_values()
+        request = {"doc": self.compare_doc, "ring": self.compare_ring, "captures": self.compare_queue, "values": values}
+        try:
+            out = subprocess.run([panel, "compare", op, *(["--to", slot] if slot else [])], input=json.dumps(request),
+                                 capture_output=True, text=True, check=True, timeout=SLOW_TIMEOUT)
+            answer = json.loads(out.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            log_once(("compare", str(e)), "omx-panel compare %s failed (%s)", op, e)
+            return getattr(e, "stderr", None) or str(e)
+        self.compare_queue = [values] if op == "switch" else []
+        self.compare_ring = answer["ring"]
+        if op in ("switch", "copy"):
+            self.compare_doc = answer["doc"]
+        self.compare_moving = True
+        try:
+            for move in answer["moves"]:
+                zctrl = self.zctrls.get(move["symbol"])
+                if zctrl is not None:
+                    zctrl.set_value(move["value"], True)
+        finally:
+            self.compare_moving = False
+        self.compare_settled = self.compare_values()
+        return None
+
+    def compare_options(self):
+        """The rows of the processor's options: [(the step, title, help)]. None without an omx-panel that has it, the release
+        of --easy-first, or a control to compare."""
+        panel = shutil.which("omx-panel")
+        if not panel or not panel_takes(panel, "--easy-first") or not self.compare_values():
+            return []
+        active = self.compare_doc["active"] if self.compare_doc else COMPARE_SLOTS[0]
+        rows = [(("switch", s), f"{chr(0x2612) if s == active else chr(0x2610)} Compare {s}",
+                 "Compare settings of this processor. Presets are not touched.") for s in COMPARE_SLOTS]
+        to = COMPARE_SLOTS[(COMPARE_SLOTS.index(active) + 1) % len(COMPARE_SLOTS)]
+        rows.append((("copy", to), f"Copy {active} to {to}", f"Put the running values in slot {to}."))
+        rows.append((("undo", None), "Undo", "Step back this processor's last change."))
+        rows.append((("redo", None), "Redo", "Step forward again."))
+        return rows
 
     # ---- Presets: the ones the plugin lists through the daemon ----
 
@@ -694,8 +776,14 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     # ---- Snapshots: the plugin's own state through state_save and state_load ----
 
     def get_extended_config(self):
-        """What a snapshot keeps past the controllers: the files state_save writes for this instance, as a base64
-        tar."""
+        """What a snapshot keeps past the controllers: the plugin's state, and the Compare slots."""
+        config = self.state_config()
+        if self.compare_doc:
+            return {**(config or {"plugin": self.plugin_uri}), "compare": self.compare_doc}
+        return config
+
+    def state_config(self):
+        """The files state_save writes for this instance, as a base64 tar."""
         if self.instance is None:
             return None
         with tempfile.TemporaryDirectory(prefix="ph-state-") as tmp:
@@ -716,6 +804,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         """Called before the processor is added: the state waits for the instance."""
         if not xconfig or xconfig.get("plugin") != self.plugin_uri:
             return
+        self.compare_doc = xconfig.get("compare")
         if "state" not in xconfig:
             return
         if self.instance is None:

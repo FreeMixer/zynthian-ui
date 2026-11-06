@@ -97,6 +97,12 @@ class zynthian_gui_processor_options(zynthian_gui_selector_info):
             self.list_data.append((self.toggle_window, None, title,
                                    ["Show or hide the plugin's own window on the display.", "info.png"]))
 
+        compare = getattr(engine, "compare_options", lambda: [])()
+        if compare:
+            self.list_data.append((None, None, "> Compare"))
+            for step, title, info in compare:
+                self.list_data.append((self.compare_step, step, title, [info, "info.png"]))
+
         self.list_data.append((None, None, "> Add to chain"))
         len_check = len(self.list_data)
         pos = "series" if self.processor.type in ["MIDI Synth", "MIDI Tool"] or self.processor.eng_code in ["MI", "MX"] else "parallel"
@@ -144,6 +150,12 @@ class zynthian_gui_processor_options(zynthian_gui_selector_info):
 
     def show_details(self):
         self.zyngui.screens["engine"].show_details(self.processor.eng_code)
+
+    def compare_step(self, step):
+        failure = self.processor.engine.compare_step(step)
+        if failure:
+            self.zyngui.show_info(f"Compare: {failure}")
+        self.update_list()
 
     def toggle_window(self):
         failure = self.processor.engine.toggle_window()

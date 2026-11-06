@@ -721,6 +721,110 @@ class test_easy(plugin_hostd_case):
         self.assertNotEqual(proc.engine.pages()[0][0], "Easy")
 
 
+class test_compare(plugin_hostd_case):
+    # Compare A/B/C/D and undo, whose module is omx-panel's: here, only that the engine reaches it
+
+    easy_plugin = test_easy.easy_plugin
+
+    def values(self, fake):
+        return fake.params[1000]
+
+    def test_compare_goes_to_a_slot_and_back_with_one_param_set_per_control_that_differs(self):
+        fake, proc = self.easy_plugin()
+        engine = proc.engine
+        proc.controllers_dict["p1"].set_value(25.0)
+        self.assertIsNone(engine.compare_step(("switch", "B")), "an empty slot takes a copy")
+        self.assertEqual(self.values(fake)["p1"], 25.0, "and nothing moves")
+        proc.controllers_dict["p1"].set_value(75.0)
+        sent = []
+        real = engine.send_quiet
+        engine.send = lambda line, timeout=5.0: sent.append(line) or real(line)
+        self.assertIsNone(engine.compare_step(("switch", "A")))
+        self.assertEqual(sent, [f"param_set {engine.instance} p1 25.0"], "one write, on the control path")
+        self.assertEqual(self.values(fake)["p1"], 25.0)
+        self.assertEqual(proc.controllers_dict["p1"].value, 25.0, "the screen follows")
+        self.assertIsNone(engine.compare_step(("switch", "B")))
+        self.assertEqual(self.values(fake)["p1"], 75.0)
+
+    def test_undo_steps_back_a_move_after_a_pause(self):
+        fake, proc = self.easy_plugin()
+        engine = proc.engine
+        before = proc.controllers_dict["p1"].value
+        engine.compare_last_move = 0  # the last move was long ago
+        proc.controllers_dict["p1"].set_value(75.0)
+        self.assertEqual(len(engine.compare_queue), 1, "no process starts while a knob turns: the step only queues")
+        engine.compare_last_move = 0  # and a step's own moves are no move of the user's, however long after
+        self.assertIsNone(engine.compare_step(("undo", None)))
+        self.assertEqual(self.values(fake)["p1"], before)
+        self.assertEqual(engine.compare_queue, [])
+        self.assertIsNone(engine.compare_step(("redo", None)))
+        self.assertEqual(self.values(fake)["p1"], 75.0)
+        self.assertEqual(engine.compare_queue, [], "a step of Compare's own queues nothing to come back to")
+
+    def test_moves_within_the_pause_are_one_step(self):
+        fake, proc = self.easy_plugin()
+        engine = proc.engine
+        engine.compare_last_move = 0
+        proc.controllers_dict["p1"].set_value(50.0)
+        proc.controllers_dict["p1"].set_value(60.0)
+        proc.controllers_dict["p1"].set_value(70.0)
+        self.assertEqual(len(engine.compare_queue), 1)
+
+    def test_the_menu_names_the_running_slot_and_says_where_copy_goes(self):
+        fake, proc = self.easy_plugin()
+        engine = proc.engine
+        titles = [t for _, t, _ in engine.compare_options()]
+        self.assertEqual(titles[:6], ["\u2612 Compare A", "\u2610 Compare B", "\u2610 Compare C", "\u2610 Compare D", "Copy A to B", "Undo"])
+        self.assertEqual(titles[6], "Redo")
+        engine.compare_step(("switch", "D"))
+        titles = [t for _, t, _ in engine.compare_options()]
+        self.assertEqual(titles[3:5], ["\u2612 Compare D", "Copy D to A"])
+
+    def test_an_omx_panel_too_old_for_it_offers_no_compare(self):
+        os.environ["OMX_PANEL_STUB_NO_EASY"] = "1"
+        self.addCleanup(os.environ.pop, "OMX_PANEL_STUB_NO_EASY", None)
+        fake, proc = self.easy_plugin()
+        self.assertEqual(proc.engine.compare_options(), [])
+
+    def test_no_omx_panel_no_compare(self):
+        fake = self.serve()
+        proc = self.add(self.chain(), "PH/Amp")
+        self.assertEqual(proc.engine.compare_options(), [])
+
+    def test_a_snapshot_keeps_the_slots_and_moves_no_value(self):
+        fake, proc = self.easy_plugin()
+        engine = proc.engine
+        proc.controllers_dict["p1"].set_value(25.0)
+        engine.compare_step(("switch", "B"))
+        proc.controllers_dict["p1"].set_value(75.0)
+        xconfig = json.loads(json.dumps(engine.get_extended_config()))
+        self.assertEqual(xconfig["compare"]["active"], "B")
+        self.assertEqual(xconfig["compare"]["slots"]["A"]["p1"], 25.0)
+        again = self.add(self.chain(), "PH/Big", xconfig=xconfig)
+        self.assertEqual(again.engine.compare_doc["active"], "B")
+        again.engine.compare_step(("switch", "A"))
+        self.assertEqual(fake.params[again.engine.instance]["p1"], 25.0, "the restored slot comes back")
+
+    def test_a_snapshot_with_no_compare_stores_none(self):
+        fake, proc = self.easy_plugin()
+        fake.verb_state_save = lambda directory: "resp -902"
+        self.assertIsNone(proc.engine.get_extended_config())
+
+    @unittest.skipUnless(os.environ.get("OMX_PANEL_REAL"), "OMX_PANEL_REAL is 'node path/to/omx-panel.mjs', the real command")
+    def test_the_real_command_answers_the_engine(self):
+        fake, proc = self.easy_plugin(easy=None)
+        os.unlink(os.path.join(self.bin, "omx-panel"))
+        with open(os.path.join(self.bin, "omx-panel"), "w") as f:
+            f.write(f'#!/bin/sh\nexec {os.environ["OMX_PANEL_REAL"]} "$@"\n')
+        os.chmod(os.path.join(self.bin, "omx-panel"), 0o755)
+        engine = proc.engine
+        proc.controllers_dict["p1"].set_value(25.0)
+        self.assertIsNone(engine.compare_step(("switch", "B")))
+        proc.controllers_dict["p1"].set_value(75.0)
+        self.assertIsNone(engine.compare_step(("switch", "A")))
+        self.assertEqual(fake.params[1000]["p1"], 25.0)
+
+
 class test_snapshot(plugin_hostd_case):
 
     def test_state_is_saved_and_loaded_into_a_new_instance(self):
