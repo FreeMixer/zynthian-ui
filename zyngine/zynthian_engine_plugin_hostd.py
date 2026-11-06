@@ -82,6 +82,7 @@ NEEDS = CHAIN_FALLBACK_NAMES + DESCRIPTOR_NONE_NAMES + (
     "DESCRIPTOR_PENDING", "ERR_INSTANCE_ALREADY_EXISTS", "ERR_INVALID_OPERATION", "ERR_MEMORY_ALLOCATION")
 protocol = zynthian_plugin_hostd_protocol.protocol(needs=NEEDS)
 ERROR_NAMES = protocol.names
+uri_word = zynthian_plugin_hostd_protocol.uri_word
 CHAIN_FALLBACK_CODES = tuple(protocol.codes[n] for n in CHAIN_FALLBACK_NAMES) if protocol.loaded else ()
 DESCRIPTOR_PENDING = protocol.codes.get("DESCRIPTOR_PENDING")
 DESCRIPTOR_NONE = tuple(protocol.codes[n] for n in DESCRIPTOR_NONE_NAMES) if protocol.loaded else ()
@@ -351,7 +352,7 @@ class plugin_hostd_daemon:
         """The user chose a plugin below our bar: tell the daemon it is the user's choice, so its add is taken. The one
         place that names the verb. A refusal is logged and the add goes on: if it is refused too, it says why."""
         try:
-            self.call(f"{ACCEPT_VERB} {uri}")
+            self.call(f"{ACCEPT_VERB} {uri_word(uri)}")
         except plugin_hostd_error as e:
             logging.warning(f"plugin-hostd {ACCEPT_VERB} {uri} => {e}")
 
@@ -361,7 +362,7 @@ class plugin_hostd_daemon:
         for instance in range(FIRST_INSTANCE, LAST_INSTANCE + 1):
             if instance not in self.engines:
                 try:
-                    self.call(f"add {uri} {instance}" + (f" {placement}" if placement else ""), SLOW_TIMEOUT)
+                    self.call(f"add {uri_word(uri)} {instance}" + (f" {placement}" if placement else ""), SLOW_TIMEOUT)
                     self.engines[instance] = engine
                     return instance
                 except plugin_hostd_error as e:
@@ -594,7 +595,7 @@ def estimate(rate, quantum, refs):
     if daemon.estimate_verb is False:
         raise zynthian_plugin_hostd_estimate.estimate_unavailable()
     try:
-        reply = daemon.call(f"estimate {rate} {quantum} {' '.join(refs)}")[1]
+        reply = daemon.call(f"estimate {rate} {quantum} {' '.join(uri_word(r) for r in refs)}")[1]
     except plugin_hostd_error as e:
         if e.code == protocol.code("ERR_INVALID_OPERATION"):
             daemon.estimate_verb = False
@@ -1162,7 +1163,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         if self.widths is False:
             self.widths = None
             try:
-                path = daemon.call(f"descriptor_get {self.plugin_uri}")[1].strip().strip('"')
+                path = daemon.call(f"descriptor_get {uri_word(self.plugin_uri)}")[1].strip().strip('"')
                 with open(path) as f:
                     ports = json.load(f).get("ports", [])
                 width = {p.get("direction"): p.get("channels") for p in ports if p.get("role") == "main"}
@@ -1205,7 +1206,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     def replay_lines(self, bulk=False):
         """What puts the instance back in a daemon that lost it: the add, the preset, every value. bulk: the values
         of the parameters in one param_set_many line, for a daemon of protocol 0.3."""
-        lines = [f"add {self.plugin_uri} {self.instance}" + (f" {self.placement}" if self.placement else "")]
+        lines = [f"add {uri_word(self.plugin_uri)} {self.instance}" + (f" {self.placement}" if self.placement else "")]
         if self.preset_key:
             lines.append(f"preset_load {self.instance} {self.preset_key}")
         params = [z for z in self.zctrls.values() if z is not self.bypass_zctrl]
@@ -1290,7 +1291,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         deadline = time.monotonic() + DESCRIPTOR_WAIT
         while True:
             try:
-                return daemon.call(f"descriptor_get {self.plugin_uri}")[1].strip().strip('"')
+                return daemon.call(f"descriptor_get {uri_word(self.plugin_uri)}")[1].strip().strip('"')
             except plugin_hostd_error as e:
                 if e.code == DESCRIPTOR_PENDING and time.monotonic() <= deadline:  # the add's scan still runs
                     time.sleep(0.25)
@@ -1655,8 +1656,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         name = preset_name.strip()
         path = os.path.join(self.user_dir(), re.sub(r"[^A-Za-z0-9._-]+", "_", name) + ".json")
         os.makedirs(self.user_dir(), exist_ok=True)
-        quoted = name.replace("\\", "\\\\").replace('"', '\\"')
-        if self.send(f'preset_save {self.instance} {path} "{quoted}"') is None:
+        if self.send(f'preset_save {self.instance} {path} {zynthian_plugin_hostd_protocol.quote(name)}') is None:
             return None
         self.preset_key = path
         for processor in self.processors:

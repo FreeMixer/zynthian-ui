@@ -23,31 +23,27 @@ CONTRACT_DIR = os.environ.get("ZYNTHIAN_PLUGIN_HOSTD_CONTRACT_DIR",
                               "/usr/share/omx-contract/contract.d/3/plugin-hostd")
 PLAN_REFUSED = "plan-refused"
 
-TEXTS = {
-    "refused": "Not grouped: its pin refuses it",
-    "no-pin": "Not grouped: it has no pin and pins are strict",
-    "no-verdict": "Not grouped: its pin has no verdict yet",
-    "verdict-isolated": "Not grouped: it was qualified to run isolated",
-    "format-world": "Not grouped: its format needs a world of its own",
-    "cost-over": "Not grouped: its cost alone is over the group limit",
-    "format-mixed": "Starts a new group: no worker runs it with the one before",
-    "group-full": "Starts a new group: the one before is full",
-    "group-cost": "Starts a new group: the one before would cost too much",
-    "cost-assumed": "Grouped on an assumed cost: none is known",
-    "no-neighbour": "Alone: no neighbour it can share a worker with",
-    "grouping-off": "Not grouped: grouping is off",
-}
+_declared = {}  # directory => {word: the daemon's sentence}
+
+
+def declared(directory=None):
+    """{reason word: the sentence the daemon declares for it} from the grouping.json its package installs; {} when
+    it cannot be read."""
+    directory = directory or CONTRACT_DIR
+    if directory not in _declared:
+        try:
+            with open(os.path.join(directory, "grouping.json")) as f:
+                doc = json.load(f)
+            _declared[directory] = {w["word"]: w["doc"] for w in doc["PLUGIN_HOSTD_GROUPING_REASONS"]["words"].values()}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            logging.debug("plugin-hostd grouping.json is not readable (%s)", e)
+            return {}
+    return _declared[directory]
 
 
 def declared_words(directory=None):
     """The reason words the daemon declares; None when its declaration cannot be read."""
-    try:
-        with open(os.path.join(directory or CONTRACT_DIR, "grouping.json")) as f:
-            doc = json.load(f)
-        return {w["word"] for w in doc["PLUGIN_HOSTD_GROUPING_REASONS"]["words"].values()}
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-        logging.debug("plugin-hostd grouping.json is not readable (%s)", e)
-        return None
+    return set(declared(directory)) or None
 
 
 def text(reason, error_name=None):
@@ -60,4 +56,4 @@ def text(reason, error_name=None):
         except ValueError:
             name = code
         return f"Not grouped: the daemon refused the plan ({name})"
-    return TEXTS.get(word, f"Not grouped: {word}")
+    return declared().get(word) or f"Not grouped: {word}"
