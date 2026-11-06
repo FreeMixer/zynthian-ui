@@ -49,6 +49,10 @@ if _lv2 is None:
     _lv2.engines_by_type = {}
     sys.modules["zyngine.zynthian_lv2"] = _lv2
 sys.modules["zyngine"].zynthian_lv2 = _lv2
+# the presets Zynthian's cache holds for an LV2 plugin, by plugin name, as jalv reads them: a bank label to its URL and
+# presets; a test sets it, and a plugin it does not name has none
+LV2_PRESETS = {}
+_lv2.get_plugin_presets_cache = lambda name: LV2_PRESETS.get(name, {})
 
 from zyngine import zynthian_engine_plugin_hostd as ph  # noqa: E402
 from zyngine import zynthian_plugin_hostd_catalogue as cat  # noqa: E402
@@ -423,20 +427,115 @@ class test_processor(plugin_hostd_case):
         fake = self.serve()
         proc = self.add(self.chain(), "PH/clap:/usr/lib/clap/test.clap#org.test.synth")
         presets = proc.engine.get_preset_list(proc.engine.get_bank_list()[0], proc)
-        self.assertEqual([(p[0], p[2]) for p in presets], [("factory:warm", "Warm Pad"), ("factory:bright", "Bright Lead")])
-        self.assertTrue(proc.engine.set_preset(proc, presets[0]))
+        self.assertEqual([(p[0], p[2]) for p in presets], [("factory:bright", "Bright Lead"), ("factory:warm", "Warm Pad")],
+                         "sorted by name")
+        self.assertTrue(proc.engine.set_preset(proc, presets[1]))
         self.assertIn("preset_load 1000 factory:warm", fake.lines)
         self.assertEqual(proc.controllers_dict["1"].value, 0.25, "the values are read back after the load")
 
-    def test_a_plugin_whose_worker_lists_no_presets_has_none(self):
+    def test_an_lv2_plugin_with_no_presets_says_so_and_logs_nothing(self):
         self.serve()
         proc = self.add(self.chain(), "PH/Amp")
         with self.assertLogs(level=logging.WARNING) as logs:
-            self.assertEqual(proc.engine.get_preset_list(None, proc), [])
-            self.assertEqual(proc.engine.get_preset_list(None, proc), [])
+            banks = proc.engine.get_bank_list(proc)
+            presets = proc.engine.get_preset_list(banks[0], proc)
+            logging.warning("end")
+        self.assertEqual([(p[0], p[2]) for p in presets], [("", "No presets")], "one row says so")
+        self.assertEqual(len(logs.records), 1, "nothing is logged for a plugin that has no presets")
+        self.assertFalse(proc.engine.set_preset(proc, presets[0]), "the row loads nothing")
+
+    def test_a_clap_plugin_whose_worker_lists_no_presets_says_so_and_logs_once(self):
+        self.serve()
+        proc = self.add(self.chain(), "PH/clap:/usr/lib/clap/lsp-plugins.clap#in.lsp-plug.limiter_mono")
+        with self.assertLogs(level=logging.WARNING) as logs:
+            self.assertEqual(proc.engine.get_preset_list(None, proc), [["", None, ph.zynthian_engine_plugin_hostd.NO_PRESETS, ""]])
+            self.assertEqual(proc.engine.get_preset_list(None, proc), [["", None, ph.zynthian_engine_plugin_hostd.NO_PRESETS, ""]])
             logging.warning("end")
         self.assertEqual(len(logs.records), 2, "PHD_ERR_NO_PRESET_LIST is logged once")
         self.assertIn("PHD_ERR_NO_PRESET_LIST", logs.output[0])
+
+    def lv2_amp_presets(self, my_data):
+        """The cache Zynthian keeps for the LV2 Amp: two banks of its bundle and one of the user's, saved under jalv."""
+        user = f"file://{my_data}/presets/lv2/Amp.presets.lv2/"
+        LV2_PRESETS["Amp"] = {
+            "Bundle A": {"bank_url": None, "presets": [{"label": "Loud_Lead", "url": "urn:test:amp#loud"}]},
+            "Bundle B": {"bank_url": "urn:test:amp#bank-b", "presets": [{"label": "clean", "url": "urn:test:amp#clean"}]},
+            "Mine": {"bank_url": user + "Mine", "presets": [{"label": "Gig", "url": user + "Gig.ttl"}]},
+        }
+        self.addCleanup(LV2_PRESETS.clear)
+        amp = fake_plugins["urn:test:amp"]
+        self.addCleanup(amp.__setitem__, "presets", amp["presets"])
+        amp["presets"] = [("urn:test:amp#loud", "Loud Lead", {"gain": 6.0}), (user + "Gig.ttl", "Gig", {"gain": -2.0})]
+        return user
+
+    def test_an_lv2_and_a_clap_plugin_show_the_same_banks_and_menu_shape(self):
+        self.serve()
+        with tempfile.TemporaryDirectory() as my_data:
+            self.lv2_amp_presets(my_data)
+            lv2 = self.add(self.chain(), "PH/Amp")
+            clap = self.add(self.chain(2), "PH/clap:/usr/lib/clap/test.clap#org.test.synth")
+            for proc in (lv2, clap):
+                proc.engine.my_data_dir = my_data
+                proc.engine.save_preset(None, "zz Saved")
+            menus = {}
+            for name, proc in (("lv2", lv2), ("clap", clap)):
+                banks = proc.engine.get_bank_list(proc)
+                rows = [proc.engine.get_preset_list(bank, proc) for bank in banks]
+                menus[name] = ([b[2] for b in banks], [[(type(r[0]), r[1], r[3]) for r in bank] for bank in rows],
+                               [[r[2] for r in bank] for bank in rows])
+                self.assertTrue(proc.auto_save_bank, "the save screen asks for no bank")
+            self.assertEqual(menus["lv2"][0], ["Factory", "User"])
+            self.assertEqual(menus["lv2"][0], menus["clap"][0], "the same bank names for both formats")
+            self.assertEqual([len(b) for b in menus["lv2"][1]], [2, 2])
+            self.assertEqual([len(b) for b in menus["clap"][1]], [2, 1])
+            self.assertEqual(menus["lv2"][1][0][0], menus["clap"][1][0][0], "a row has the same shape for both formats")
+            self.assertEqual(menus["lv2"][2], [["clean", "Loud Lead"], ["Gig", "zz Saved"]],
+                             "plain names, sorted by name; the bundle's banks are one Factory, jalv's and ours one User")
+            self.assertEqual(menus["clap"][2], [["Bright Lead", "Warm Pad"], ["zz Saved"]], "sorted the same way")
+
+    def test_an_lv2_preset_loads_by_its_uri_whichever_bank_it_is_in(self):
+        fake = self.serve()
+        with tempfile.TemporaryDirectory() as my_data:
+            user = self.lv2_amp_presets(my_data)
+            proc = self.add(self.chain(), "PH/Amp")
+            proc.engine.my_data_dir = my_data
+            factory, mine = (proc.engine.get_preset_list(b, proc) for b in proc.engine.get_bank_list(proc))
+            self.assertTrue(proc.engine.set_preset(proc, factory[1]))
+            self.assertIn("preset_load 1000 urn:test:amp#loud", fake.lines)
+            self.assertEqual(proc.controllers_dict["gain"].value, 6.0, "the values are read back after the load")
+            self.assertEqual(mine[0][0], user + "Gig.ttl")
+            self.assertTrue(proc.engine.is_preset_user(mine[0]) and not proc.engine.is_preset_user(factory[0]))
+            self.assertTrue(proc.engine.set_preset(proc, mine[0]))
+            self.assertEqual(proc.controllers_dict["gain"].value, -2.0)
+            self.assertNotIn("preset_list 1000", fake.lines, "an LV2 plugin's presets are not asked of the worker")
+
+    def test_a_user_preset_is_saved_through_the_worker_and_loaded_renamed_and_deleted(self):
+        fake = self.serve()
+        with tempfile.TemporaryDirectory() as my_data:
+            proc = self.add(self.chain(), "PH/clap:/usr/lib/clap/test.clap#org.test.synth")
+            engine = proc.engine
+            engine.my_data_dir = my_data
+            user = engine.get_bank_list(proc)[1]
+            self.assertEqual([r[2] for r in engine.get_preset_list(user, proc)], [ph.zynthian_engine_plugin_hostd.NO_PRESETS])
+            proc.controllers_dict["1"].set_value(0.375)
+            self.assertFalse(engine.preset_exists(user, "Gig Pad"))
+            path = engine.save_preset(None, "Gig Pad")
+            self.assertTrue(path and path.startswith(engine.user_dir() + os.sep) and " " not in path, path)
+            self.assertIn(f'preset_save 1000 {path} "Gig Pad"', fake.lines, "saved by the worker, the name quoted")
+            self.assertTrue(engine.preset_exists(user, "Gig Pad"))
+            self.assertEqual(proc.bank_info[0], "user", "the processor is in User after a save")
+            presets = engine.get_preset_list(user, proc)
+            self.assertEqual([(p[0], p[2]) for p in presets], [(path, "Gig Pad")])
+            self.assertTrue(engine.is_preset_user(presets[0]))
+            proc.controllers_dict["1"].set_value(0.9)
+            self.assertTrue(engine.set_preset(proc, presets[0]))
+            self.assertIn(f"preset_load 1000 {path}", fake.lines, "loaded by its path")
+            self.assertEqual(proc.controllers_dict["1"].value, 0.375, "the saved value is back")
+            engine.rename_preset(user, presets[0], "Gig Pad 2")
+            self.assertEqual([p[2] for p in engine.get_preset_list(user, proc)], ["Gig Pad 2"])
+            self.assertEqual(engine.delete_preset(user, engine.get_preset_list(user, proc)[0]), 0)
+            self.assertFalse(os.path.exists(path))
+            self.assertFalse(hasattr(engine, "create_user_bank"), "no bank is created: there are two")
 
     def test_remove_takes_the_instance_out_of_the_daemon(self):
         fake = self.serve()

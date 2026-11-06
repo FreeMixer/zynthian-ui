@@ -395,6 +395,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                 self.pending_state = None
         if processor not in self.processors:
             self.processors.append(processor)
+        # a save always goes to User: the save screen asks for no bank
+        processor.auto_save_bank = True
         processor.jackname = self.jackname
         self.set_midi_chan(processor)
         processor.refresh_controllers()
@@ -742,23 +744,124 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         rows.append((("redo", None), "Redo", "Step forward again."))
         return rows
 
-    # ---- Presets: the ones the plugin lists through the daemon ----
+    # ---- Presets ----
+    # Every plugin shows the same two banks, whatever its format: Factory, the presets the
+    # plugin ships, and User, the user's; plain names, sorted by name, the same save, rename and delete. The format is
+    # only in a preset's key: an LV2 preset's URI (its bundle's, or a user preset Zynthian saved under jalv, from
+    # zynthian_lv2's cache), a key of the daemon's preset_get for a CLAP preset, or the path of a preset file the worker
+    # wrote through preset_save. A bank with nothing in it shows one row that says so, which loads nothing.
+
+    NO_PRESETS = "No presets"
+    FACTORY = ("factory", None, "Factory", None)
+    USER = ("user", None, "User", None)
+
+    def is_lv2(self):
+        return not self.plugin_uri.startswith("clap:")
+
+    def lv2_preset_info(self):
+        from zyngine import zynthian_lv2
+        try:
+            return zynthian_lv2.get_plugin_presets_cache(self.plugin_name) or {}
+        except Exception as e:
+            log_once(("presets", self.nickname), "no LV2 presets cache for %s: %s", self.plugin_name, e)
+            return {}
+
+    def user_dir(self):
+        return os.path.join(self.my_data_dir, "presets", "plugin-hostd", re.sub(r"[^A-Za-z0-9._-]+", "_", self.plugin_name))
+
+    def is_lv2_user_url(self, url):
+        return isinstance(url, str) and url.startswith(f"file://{self.my_data_dir}/presets/lv2/")
+
+    def preset_files(self):
+        """[(path, name)] of the preset files the worker wrote for this plugin."""
+        found = []
+        try:
+            names = os.listdir(self.user_dir())
+        except OSError:
+            return found
+        for f in names:
+            if f.endswith(".json"):
+                path = os.path.join(self.user_dir(), f)
+                try:
+                    with open(path) as fh:
+                        found.append((path, json.load(fh).get("name") or f[:-5]))
+                except (OSError, ValueError) as e:
+                    log_once(("user-preset", path), "a user preset of %s cannot be read (%s): %s", self.plugin_name, path, e)
+        return found
+
+    def factory_presets(self):
+        """[(key, name)] of the presets the plugin ships."""
+        if self.is_lv2():
+            return [(p["url"], p["label"].replace("_", " ").strip()) for info in self.lv2_preset_info().values()
+                    for p in info.get("presets", []) if not self.is_lv2_user_url(p.get("url"))]
+        presets = []
+        try:
+            for i in range(daemon.call(f"preset_list {self.instance}")[0]):
+                key, _, name = daemon.call(f"preset_get {self.instance} {i}")[1].partition(" ")
+                presets.append((key, name or key))
+        except FAILURES as e:
+            log_once(("presets", self.nickname), "plugin-hostd lists no presets for %s: %s", self.plugin_name, e)
+        return presets
+
+    def user_presets(self):
+        """[(key, name)] of the user's presets: the files saved through plugin-hostd, and an LV2 plugin's under jalv."""
+        lv2 = [(p["url"], p["label"].replace("_", " ").strip()) for info in self.lv2_preset_info().values()
+               for p in info.get("presets", []) if self.is_lv2_user_url(p.get("url"))] if self.is_lv2() else []
+        return self.preset_files() + lv2
 
     def get_bank_list(self, processor=None):
-        return [("", None, "Presets", None)]
+        return [self.FACTORY, self.USER]
 
     def set_bank(self, processor, bank):
         return True
 
     def get_preset_list(self, bank, processor=None):
-        presets = []
-        try:
-            for i in range(daemon.call(f"preset_list {self.instance}")[0]):
-                key, _, name = daemon.call(f"preset_get {self.instance} {i}")[1].partition(" ")
-                presets.append([key, None, name or key, ""])
-        except FAILURES as e:
-            log_once(("presets", self.nickname), "plugin-hostd lists no presets for %s: %s", self.plugin_name, e)
-        return presets
+        user = bool(bank) and bank[0] == self.USER[0]
+        listed = self.user_presets() if user else self.factory_presets()
+        presets = [[key, None, name, (self.USER if user else self.FACTORY)[0]]
+                   for key, name in sorted(listed, key=lambda p: p[1].lower())]
+        return presets or [["", None, self.NO_PRESETS, ""]]
+
+    def is_preset_user(self, preset):
+        if not preset or not isinstance(preset[0], str):
+            return False
+        return preset[0] == self.USER[0] or preset[0].startswith(self.user_dir() + os.sep) or self.is_lv2_user_url(preset[0])
+
+    def edit_preset_file(self, path, **members):
+        with open(path) as fh:
+            doc = json.load(fh)
+        doc.update(members)
+        with open(path + ".tmp", "w") as fh:
+            json.dump(doc, fh, indent=2)
+        os.replace(path + ".tmp", path)
+
+    def preset_exists(self, bank, preset_name):
+        return any(name == preset_name.strip() for _, name in self.preset_files())
+
+    def save_preset(self, bank, preset_name):
+        """The instance into a user preset file through the worker (preset_save), whatever the bank asked; its path,
+        None when the save failed."""
+        name = preset_name.strip()
+        path = os.path.join(self.user_dir(), re.sub(r"[^A-Za-z0-9._-]+", "_", name) + ".json")
+        os.makedirs(self.user_dir(), exist_ok=True)
+        quoted = name.replace("\\", "\\\\").replace('"', '\\"')
+        if self.send(f'preset_save {self.instance} {path} "{quoted}"') is None:
+            return None
+        self.preset_key = path
+        for processor in self.processors:
+            if not processor.bank_list:
+                processor.get_bank_list()
+            processor.set_bank_by_id(self.USER[0])
+        return path
+
+    def delete_preset(self, bank, preset):
+        if preset and isinstance(preset[0], str) and preset[0].startswith(self.user_dir() + os.sep):
+            os.unlink(preset[0])
+        return len(self.user_presets())
+
+    def rename_preset(self, bank, preset, new_preset_name):
+        if preset and isinstance(preset[0], str) and preset[0].startswith(self.user_dir() + os.sep):
+            self.edit_preset_file(preset[0], name=new_preset_name.strip())
 
     def set_preset(self, processor, preset, preload=False):
         if not preset or not preset[0] or self.send(f"preset_load {self.instance} {preset[0]}") is None:
