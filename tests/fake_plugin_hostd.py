@@ -45,6 +45,7 @@ class fake_plugin_hostd:
         self.instances = {}  # instance => uri
         self.params = {}  # instance => {symbol: value}
         self.bypass = {}
+        self.windows = set()  # instances whose own window is shown
         self.connections = 0
         self.lines = []
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -136,6 +137,18 @@ class fake_plugin_hostd:
         if n not in self.instances:
             return "resp -3"
         del self.instances[n], self.params[n]
+        return "resp 0"
+
+    def verb_show_external_ui(self, instance):
+        if int(instance) not in self.instances:
+            return "resp -3"
+        self.windows.add(int(instance))
+        return "resp 0"
+
+    def verb_hide_external_ui(self, instance):
+        if int(instance) not in self.instances:
+            return "resp -3"
+        self.windows.discard(int(instance))
         return "resp 0"
 
     def verb_bypass(self, instance, value):
