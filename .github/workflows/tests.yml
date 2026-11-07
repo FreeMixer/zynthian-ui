@@ -47,6 +47,18 @@ jobs:
             echo "VECTORS FROM BRANCH $SHA"
           fi
 
+      - name: Fetch omx-panel's gesture declaration
+        # the one gesture vocabulary is omx-panel's schema/gestures.json; the tree keeps no copy. Until the channel's
+        # omx-panel carries it, it comes from a named commit of omx-panel main, and the log says so
+        run: |
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+          SHA=9a78689e575039d28548fbba1ead15be3708ac26
+          git clone -q https://github.com/FreeMixer/omx-panel /tmp/omx-panel
+          git -C /tmp/omx-panel checkout -q "$SHA"
+          test -f /tmp/omx-panel/schema/gestures.json
+          echo "ZYNTHIAN_OMX_GESTURES=/tmp/omx-panel/schema/gestures.json" >> "$GITHUB_ENV"
+          echo "GESTURES FROM BRANCH $SHA"
+
       - uses: actions/checkout@v4
 
       - name: python3 -m pytest -q tests/
