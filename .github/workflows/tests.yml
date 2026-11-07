@@ -31,8 +31,9 @@ jobs:
 
       - name: Install plugin-hostd from the channel
         run: |
-          apt-get install -y -qq --no-install-recommends plugin-hostd
-          dpkg-query -W plugin-hostd
+          apt-get install -y -qq --no-install-recommends plugin-hostd omx-contract-data
+          dpkg-query -W plugin-hostd omx-contract-data
+          test -f /usr/share/omx-contract/scale-vectors.json
 
       - uses: actions/checkout@v4
 
