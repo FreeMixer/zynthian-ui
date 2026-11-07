@@ -31,6 +31,7 @@ from threading import Timer
 # Zynthian specific modules
 from zyncoder.zyncore import lib_zyncore
 from zyngine.zynthian_signal_manager import zynsigman
+from zyngine import zynthian_position_law as position_law
 
 # ----------------------------------------------------------------------------
 
@@ -85,6 +86,7 @@ class zynthian_controller:
         self.is_trigger = False  # True if control is one-shot trigger
         self.is_integer = True  # True if control is Integer
         self.is_logarithmic = False  # True if control uses logarithmic scale
+        self.position_law = None  # Travel of a plugin-hostd control: its position follows zynthian_position_law
         self.is_bypass = False  # True for the processor's bypass controller, if any. Shouldn't be more than one by processor.
         self.bypass_value = 0   # Value that bypass the processor
         if full:
@@ -187,6 +189,8 @@ class zynthian_controller:
             self.nudge_factor_fine = options['nudge_factor_fine']
         if 'is_logarithmic' in options:
             self.is_logarithmic = options['is_logarithmic']
+        if 'position_law' in options:
+            self.position_law = options['position_law']
         if 'is_path' in options:
             self.is_path = options['is_path']
         if self.is_path and not self.value:
@@ -427,7 +431,11 @@ class zynthian_controller:
         if factor is None:
             return False
 
-        if self.is_logarithmic and self.value_range:
+        if self.position_law and self.value_range and position_law.effective_law(self.position_law) == "log":
+            pos = position_law.scale_position(self.position_law, self.value)
+            pos = min(1, max(0, pos + val * factor))
+            self.set_value(position_law.scale_value(self.position_law, pos), send)
+        elif self.is_logarithmic and not self.position_law and self.value_range:
             log_val = math.log10((9 * self.value - (10 * self.value_min - self.value_max)) / self.value_range)
             log_val = min(1, max(0, log_val + val * factor))
             self.set_value((math.pow(10, log_val) * self.value_range + (10 * self.value_min - self.value_max)) / 9)
@@ -587,10 +595,16 @@ class zynthian_controller:
             logging.error(e)
             return 0
 
+    def _cc_travel(self):
+        # the travel a plugin-hostd control's CC runs over: its position law between the CC range's ends
+        return dict(self.position_law, min=self.midi_cc_val1, max=self.midi_cc_val2)
+
     def get_ctrl_midi_val(self):
         try:
             if self.midi_cc_range == 0:
                 return 0
+            elif self.position_law:
+                val = max(0, min(127, int(127 * position_law.scale_position(self._cc_travel(), self.value) + 1e-9)))
             elif self.is_logarithmic:
                 val = int(127 * math.log10((9 * self.value - (10 * self.midi_cc_val1 - self.midi_cc_val2)) / self.midi_cc_range))
             else:
@@ -667,7 +681,9 @@ class zynthian_controller:
                     else:
                         value = self.value_min
             else:
-                if self.is_logarithmic:
+                if self.position_law:
+                    value = position_law.scale_value(self._cc_travel(), val / 127)
+                elif self.is_logarithmic:
                     value = self.midi_cc_val1 + self.midi_cc_range * (math.pow(10, val/127) - 1) / 9
                 else:
                     value = self.midi_cc_val1 + val * self.midi_cc_range / 127
@@ -707,7 +723,10 @@ class zynthian_controller:
                     logging.error(f"Wrong MIDI CC mode {self.midi_cc_mode}")
                     return
 
-            if self.is_logarithmic:
+            if self.position_law:
+                pos = position_law.scale_position(self._cc_travel(), self.value) + dval / 127
+                value = position_law.scale_value(self._cc_travel(), min(1, max(0, pos)))
+            elif self.is_logarithmic:
                 if dval > 0:
                     value = self.value * (1 + dval/10)
                 else:
