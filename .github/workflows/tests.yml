@@ -38,7 +38,7 @@ jobs:
           if [ -f /usr/share/omx-contract/scale-vectors.json ]; then
             echo "VECTORS FROM INSTALLED PACKAGE"
           else
-            SHA=2fccea15473353f8603c5d21bbe4b12dec5b7245
+            SHA=ea1b1e05eeab2749d42065871973b7d1f38d165d
             apt-get install -y -qq --no-install-recommends git ca-certificates
             git clone -q https://github.com/FreeMixer/omx-contract /tmp/omx-contract
             git -C /tmp/omx-contract checkout -q "$SHA"
