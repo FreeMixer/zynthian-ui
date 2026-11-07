@@ -1461,6 +1461,9 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                 if o["scale"] in ("linear", "log") and meta.get("kind") not in ("toggle", "choice"):
                     # the position law is the contract's; only these controllers follow it
                     zopts["position_law"] = {"scale": o["scale"], "min": o["min"], "max": o["max"]}
+                    if travel.get("step"):
+                        # the declared step: a gesture's step is this and not a number of its own
+                        zopts["position_law"]["step"] = travel["step"]
                 if meta.get("kind") == "toggle":
                     zopts.update(is_toggle=True, is_integer=True, value_min=0, value_max=1, labels=["off", "on"],
                                  ticks=[0, 1], value_default=int(bool(meta.get("default"))))

@@ -1,0 +1,74 @@
+{
+ "origin": "scanned",
+ "plugin": {
+  "id": "urn:test:filter",
+  "format": "lv2",
+  "uri": "urn:test:filter",
+  "name": "Filter",
+  "features": [
+   "audio-effect"
+  ]
+ },
+ "controls": [
+  {
+   "id": "cutoff",
+   "name": "Cutoff",
+   "kind": "travel",
+   "travel": {
+    "min": 20,
+    "max": 20000,
+    "unit": "Hz",
+    "default": 1000,
+    "scale": "log"
+   },
+   "group": [
+    "Main"
+   ],
+   "meaning": "unknown"
+  },
+  {
+   "id": "gain",
+   "name": "Gain",
+   "kind": "travel",
+   "travel": {
+    "min": -20,
+    "max": 20,
+    "unit": "dB",
+    "default": 0,
+    "scale": "linear",
+    "step": 0.5
+   },
+   "group": [
+    "Main"
+   ],
+   "meaning": "unknown"
+  },
+  {
+   "id": "mode",
+   "name": "Mode",
+   "kind": "travel",
+   "travel": {
+    "min": 0,
+    "max": 3,
+    "unit": "",
+    "default": 0,
+    "scale": "stepped",
+    "step": 1
+   },
+   "group": [
+    "Main"
+   ],
+   "meaning": "unknown"
+  },
+  {
+   "id": "active",
+   "name": "Active",
+   "kind": "toggle",
+   "default": 0,
+   "group": [
+    "Main"
+   ],
+   "meaning": "unknown"
+  }
+ ]
+}
