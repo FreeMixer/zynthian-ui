@@ -26,6 +26,9 @@ if "psutil" not in sys.modules:
 
 import importlib.util  # noqa: E402
 import test_engine_menu as menu  # noqa: E402  the engine screen with its stand-ins
+import test_engine_plugin_hostd as engine_tests  # noqa: E402  the engine and its fake daemon
+from fake_plugin_hostd import fake_plugin_hostd  # noqa: E402
+from zyngine import zynthian_engine_plugin_hostd as ph  # noqa: E402
 from zyngine import zynthian_plugin_tiers as tiers  # noqa: E402
 
 
@@ -155,6 +158,49 @@ class plugin_bar_screen(unittest.TestCase):
         self.screen.listbox.itemconfig.assert_any_call(1, {'fg': "#warn"})
         self.screen.listbox.itemconfig.assert_any_call(2, {'fg': "#grey"})
         self.assertEqual(self.screen.listbox.itemconfig.call_count, 2)
+
+
+class plugin_bar_reaches_the_daemon_after_a_restart(engine_tests.plugin_hostd_case):
+    """The daemon keeps a plugin the user accepted across the UI's restarts; the saved bar decides, at each add, whether
+    that choice stands."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir2 = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir2.cleanup)
+        self.fpath = os.path.join(self.dir2.name, "zynthian_envars.sh")
+        with open(self.fpath, "w") as f:
+            f.write(ENVARS)
+        install_real_zynconf(self)
+        os.environ.pop("ZYNTHIAN_PLUGIN_BAR", None)
+        self.qualify("pin_set urn:test:amp amp.so=00 omx-layout/1:00 verdict=refused\n")
+
+    qualify = engine_tests.test_below_bar.qualify
+
+    def restart(self):
+        """What the next start of the UI does: the environment is gone, the configuration file is read again."""
+        os.environ.pop("ZYNTHIAN_PLUGIN_BAR", None)
+        path = os.environ["PATH"]
+        os.environ["PATH"] = "/usr/bin:/bin"  # the shell that reads the file needs its tools
+        try:
+            zynconf.load_config(True, self.fpath)
+        finally:
+            os.environ["PATH"] = path
+
+    def test_a_bar_raised_in_the_menu_is_still_in_force_after_a_restart_of_the_ui(self):
+        with mock.patch.object(fake_plugin_hostd, "REFUSED", {"urn:test:amp"}):
+            fake = self.serve()
+            tiers.set_plugin_bar("load-all", self.fpath)
+            self.restart()
+            self.add(self.chain(), "PH/Amp")  # accepted: the daemon now holds the user's choice
+            tiers.set_plugin_bar("qualified-only", self.fpath)
+            self.restart()
+            self.assertEqual(tiers.plugin_bar(), "qualified-only")
+            with self.assertRaises(ph.plugin_hostd_error) as refused:
+                self.add(self.chain(2), "PH/Amp")
+        self.assertEqual(refused.exception.code, -516)
+        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "pin_clear")],
+                         ["pin_accept urn:test:amp", "pin_clear urn:test:amp"])
 
 
 if __name__ == "__main__":

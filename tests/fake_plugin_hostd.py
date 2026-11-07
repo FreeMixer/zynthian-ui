@@ -312,6 +312,11 @@ class fake_plugin_hostd:
         self.accepted = getattr(self, "accepted", set()) | {uri}
         return "resp 0"
 
+    def verb_pin_clear(self, uri):
+        """The user's choice taken back (or every one, with all)."""
+        self.accepted = set() if uri == "all" else getattr(self, "accepted", set()) - {grammar.pin_key(uri)}
+        return "resp 0"
+
     def verb_add(self, uri, instance, *rest):
         uri = grammar.pin_key(uri)
         n = int(instance)
