@@ -84,6 +84,13 @@ class refusing_engine:
         raise AssertionError("the engine never took the processor, so it is not asked to remove it")
 
 
+class barred_engine(refusing_engine):
+    """The daemon refusing a plugin whose pin says refused, the user's bar not accepting it (-516 PIN_REFUSED)."""
+
+    def add_processor(self, processor):
+        raise ph.plugin_hostd_error(-516, "add urn:test:piano 1000")
+
+
 class accepting_engine(refusing_engine):
 
     def add_processor(self, processor):
@@ -150,6 +157,14 @@ class refused_add(unittest.TestCase):
         self.assertEqual(self.chain.get_processors(), [])
         self.assertEqual(self.man.zyngines, {})
         self.assertFalse(self.man.state_manager.is_busy(), self.man.state_manager.busy)
+
+    def test_a_refusal_that_is_the_bars_own_leaves_no_mark_so_a_lowered_bar_asks_the_daemon_again(self):
+        self.man.engine_info["PH/Piano"]["ENGINE"] = barred_engine
+        self.assertIsNone(self.man.add_processor(1, "PH/Piano", proc_id=1000))
+        self.assertIn("PIN_REFUSED", self.man.add_refusal, "the add still says why")
+        self.assertFalse(self.man.engine_info["PH/Piano"].get("NOT_WORKING"))
+        self.man.engine_info["PH/Piano"]["ENGINE"] = accepting_engine  # the bar was lowered and the daemon took it
+        self.assertIsNotNone(self.man.add_processor(1, "PH/Piano", proc_id=1001))
 
     def test_an_entry_the_catalogue_marks_not_working_is_not_added_and_says_why(self):
         self.man.engine_info["PH/Ok"].update(NOT_WORKING="not installed",
