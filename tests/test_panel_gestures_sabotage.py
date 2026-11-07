@@ -34,13 +34,20 @@ ARMS = {
     "drop fine": ('fine=bool(e.state & SHIFT))\n\n\ndef tk_release', "fine=False)\n\n\ndef tk_release"),
     "drop double-click reset": ('if o["second"] and self.word("doubleTap") == "reset":', "if False:"),
     "drop backspace reset": ('if self.word("backspace") == "reset":', "if False:"),
-    "drop wheel step": ('        word = self.word(inp)\n        if not word:\n            return self.refuse("GESTURE_NOT_IN_TABLE", t, f"a {self.widget} has no {inp}")\n        if word != "step"',
-                        '        word = self.word(inp)\n        return\n        if word != "step"'),
+    "drop wheel step": ('        word = self.word(inp)\n        if not word:\n            return self.refuse("GESTURE_NOT_IN_TABLE", t, f"a {self.widget} has no {inp}")\n        if word == "second" and self.second',
+                        '        word = self.word(inp)\n        return\n        if word == "second" and self.second'),
     "drop coarse": ("count = abs(n) * (", "count = abs(n) * 1 or ("),
     "drop toggle": ('if word == "toggle":', "if False:"),
     "drop long-press more": ('if self.word("longPress") == "more":', "if False:"),
     "tap changes the value": ('self.on_word("select")  # a tap selects and never changes a value',
                               'self.on_word("select"); self.change(g, self.travel.default)'),
+    "pinch ignored": ('self.word("pinch") == "second"', 'self.word("pinch") == "never"'),
+    "literal palmGuardMs": ('T["palmGuardMs"]["default"]', "300"),
+    "pinch does not scale by the spread": ('self.pinch["q0"] * (', 'self.pinch["q0"] + 0 * ('),
+    "pinch ignores the range": ('min(q["max"], max(q["min"], self.pinch', 'min(float("inf"), max(q["min"], self.pinch'),
+    "encoder 3 dropped": ('"encoder3" if source == "encoder3" else', '"detent" if source == "encoder3" else'),
+    "the touch layer drops the moves": ('elif s["moved"]:', 'elif False:', os.path.join("zyngine", "zynthian_touch_layer.py")),
+    "the touch layer drops the lift": ('self.emit("up", s["id"], x, y, t)', 'pass', os.path.join("zyngine", "zynthian_touch_layer.py")),
     "the claim is not kept": ('self.claim = {"source": source, "until": t + T["claimMs"]["default"]}', "pass"),
     "a drag does not start from where it is": ('o["acc"] = self.travel.position(self.get())', 'o["acc"] = 0.0'),
 }
@@ -51,15 +58,15 @@ def run_copy(mutation=None):
         for d in ("zyngine", "tests"):
             shutil.copytree(os.path.join(ROOT, d), os.path.join(tmp, d), ignore=shutil.ignore_patterns("__pycache__"))
         if mutation:
-            path = os.path.join(tmp, MODULE)
+            old, new, *module = mutation
+            path = os.path.join(tmp, module[0] if module else MODULE)
             with open(path) as f:
                 code = f.read()
-            old, new = mutation
             assert code.count(old) >= 1, f"the arm did not land: {old!r} is not in the module"
             with open(path, "w") as f:
                 f.write(code.replace(old, new))
         return subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
-                               os.path.join(tmp, "tests", "test_panel_gestures.py")],
+                               os.path.join(tmp, "tests", "test_panel_gestures.py"), os.path.join(tmp, "tests", "test_touch_pinch.py")],
                               cwd=tmp, capture_output=True, text=True, env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"))
 
 
