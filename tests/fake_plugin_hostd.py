@@ -43,6 +43,11 @@ PLUGINS = {
         "params": {"1": ("-", "linear", 0.0, 1.0, 0.5)}, "info": False, "presets": None},
     "clap:/usr/lib/clap/Two  Spaces.clap#org.test.two": {
         "params": {"1": ("-", "linear", 0.0, 1.0, 0.5)}, "info": False, "presets": None},
+    # plugins with a patch property that names a file: the property's URI is the plugin's own, read from its TTL
+    "urn:test:sampler": {"params": {"gain": ("dB", "linear", -20.0, 20.0, 0.0)}, "info": True, "presets": None,
+                         "patch": ("http://sampler.test/lv2#P101_SAMPLE_FILE",)},
+    "urn:test:kit": {"params": {"gain": ("dB", "linear", -20.0, 20.0, 0.0)}, "info": True, "presets": None,
+                     "patch": ("http://kit.test/lv2#KIT_FILE", "http://kit.test/lv2#TUNING_FILE")},
     "urn:test:big": {"params": {f"p{i}": ("Hz", "linear", 0.0, 100.0, 10.0) for i in range(10)},
                      "info": False, "presets": None},
 }
@@ -59,6 +64,7 @@ class fake_plugin_hostd:
         self.mod_host = mod_host  # answer like mod-host: no plugin-hostd verbs
         self.instances = {}  # instance => uri
         self.params = {}  # instance => {symbol: value}
+        self.patches = {}  # instance => {property uri: the file the plugin was given}
         self.bypass = {}
         self.windows = set()  # instances whose own window is shown
         self.chains = {}  # chain => tuple of instances
@@ -335,13 +341,14 @@ class fake_plugin_hostd:
             return "resp -516"
         self.instances[n] = uri
         self.params[n] = {s: p[4] for s, p in PLUGINS[uri]["params"].items()}
+        self.patches[n] = {}
         return f"resp {n}"
 
     def verb_remove(self, instance):
         n = int(instance)
         if n not in self.instances:
             return "resp -3"
-        del self.instances[n], self.params[n]
+        del self.instances[n], self.params[n], self.patches[n]
         for chain, members in list(self.chains.items()):
             if n in members:
                 self.chains[chain] = tuple(m for m in members if m != n)
@@ -476,6 +483,25 @@ class fake_plugin_hostd:
         if self.chains.pop(int(chain), None) is None:
             return "resp -522"
         return "resp 0"
+
+    def verb_patch_set(self, instance, prop, value):
+        """patch_set <instance> <property uri> <value>: a path with a space is one word only in quotation marks, so an
+        unquoted one is too many arguments, which the fake answers -902 as the daemon's grammar refuses it."""
+        n = int(instance)
+        if n not in self.instances:
+            return "resp -3"
+        if prop not in PLUGINS[self.instances[n]].get("patch", ()):
+            return "resp -902"
+        self.patches[n][prop] = value
+        return "resp 0"
+
+    def verb_patch_get(self, instance, prop):
+        n = int(instance)
+        if n not in self.instances:
+            return "resp -3"
+        if prop not in PLUGINS[self.instances[n]].get("patch", ()):
+            return "resp -902"
+        return "resp 0 " + self.patches[n][prop] if prop in self.patches[n] else "resp 0"
 
     def verb_descriptor_get(self, uri):
         uri = grammar.pin_key(uri)

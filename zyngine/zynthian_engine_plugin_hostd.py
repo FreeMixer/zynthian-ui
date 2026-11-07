@@ -1131,6 +1131,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.compare_moving = False
         self.bypass_zctrl = None
         self.zctrls = {}
+        self.path_zctrls = {}  # symbol => the controller of a plugin's file property (a sample, a kit, an SFZ), see Files below
+        self.path_uris = {}  # symbol => the URI of that patch property, from the plugin's TTL
         self.labels = {}
         self._ctrls = []
         self._ctrl_screens = []
@@ -1144,6 +1146,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             self.zctrls = self.build_controllers()
             self.compare_settled = self.compare_values()
             self.generate_ctrl_screens(self.zctrls)
+            self.path_zctrls = self.build_path_controllers()
+            self.generate_ctrl_screens(self.path_zctrls)
             if self.pending_state:
                 self.load_state(self.pending_state)
                 self.pending_state = None
@@ -1225,6 +1229,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         lines = [f"add {uri_word(self.plugin_uri)} {self.instance}" + (f" {self.placement}" if self.placement else "")]
         if self.preset_key:
             lines.append(f"preset_load {self.instance} {self.preset_key}")
+        lines += self.path_lines()
         params = [z for z in self.zctrls.values() if z is not self.bypass_zctrl]
         if bulk and params:
             lines.append(f"param_set_many {self.instance} " + " ".join(f"{z.symbol} {z.value}" for z in params))
@@ -1485,15 +1490,20 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         for zctrl in self.zctrls.values():
             zctrl.set_options({"processor": processor})
         zctrls.update(self.zctrls)
+        zctrls.update(self.path_zctrls)
         return zctrls
 
     def value_line(self, zctrl):
+        if zctrl.is_path:
+            return self.path_line(zctrl)
         if zctrl is self.bypass_zctrl:
             return f"bypass {self.instance} {int(zctrl.value)}"
         return f"param_set {self.instance} {zctrl.symbol} {zctrl.value}"
 
     def send_controller_value(self, zctrl):
-        if self.instance is not None:
+        if self.instance is not None and zctrl.is_path:
+            self.send_path(zctrl)
+        elif self.instance is not None:
             self.send(self.value_line(zctrl))
             if zctrl is not self.bypass_zctrl:
                 self.compare_note_move(zctrl)
@@ -1504,7 +1514,70 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         for symbol, value in values.items():
             if value:
                 self.zctrls[symbol].set_value(float(value), False)
+        for symbol in self.path_zctrls:
+            path = self.read_path(symbol)
+            if path:
+                self.path_zctrls[symbol].set_value(path, False)
         self.compare_settle()
+
+    # ---- Files ----
+    # A plugin that plays a sample, a kit or an SFZ takes the file through a patch property whose range is a path
+    # (atom:Path). The properties are the plugin's own: their URIs and file types are read from its TTL (zynthian_lv2),
+    # never typed here, and each is a controller that opens the file browser. The file reaches the plugin as
+    # patch_set <instance> <property uri> <path>, the path in quotation marks (a space ends a word otherwise); patch_get
+    # reads it back. plugin-hostd keeps the line in the instance's ledger and puts it back after a worker respawn
+    # (plugin-hostd-protocol: patch_set is a recorded state verb, keyed by its property); a daemon that is replaced
+    # is given it again by replay_lines, a snapshot keeps it as the controller's value, a user preset in its "patch" member.
+
+    def path_properties(self):
+        """[(symbol, name, property URI, file types)] of the plugin's file properties: an LV2 plugin's patch:writable
+        properties whose range is atom:Path. A CLAP plugin has none."""
+        if not self.is_lv2():
+            return []
+        try:
+            from zyngine import zynthian_lv2
+            ports = zynthian_lv2.get_plugin_ports(self.plugin_uri).values()
+        except Exception as e:
+            log_once(("paths", self.plugin_uri), "no file properties for %s: %s", self.plugin_uri, e)
+            return []
+        return [(p["symbol"], p["name"], p["uri"], p.get("path_file_types")) for p in ports
+                if p.get("is_path") and p.get("uri")]
+
+    def build_path_controllers(self):
+        zctrls = {}
+        for symbol, name, uri, types in self.path_properties():
+            if symbol in self.zctrls:
+                continue
+            self.path_uris[symbol] = uri
+            zctrls[symbol] = zynthian_controller(self, symbol, {
+                "name": name, "group_symbol": "files", "group_name": "Files", "value": "", "value_default": "",
+                "value_min": None, "value_max": None, "is_path": True, "path_file_types": types,
+                "display_priority": len(self.zctrls) + 1})
+        return zctrls
+
+    def path_line(self, zctrl):
+        """The patch_set of a chosen file, "" for none (a file cannot be taken back, only replaced)."""
+        if not zctrl.value:
+            return ""
+        return f"patch_set {self.instance} {self.path_uris[zctrl.symbol]} {zynthian_plugin_hostd_protocol.quote(zctrl.value)}"
+
+    def path_lines(self):
+        return [line for line in (self.path_line(z) for z in self.path_zctrls.values()) if line]
+
+    def read_path(self, symbol):
+        """The file the plugin reports for the property (patch_get), "" when it has none, None when the daemon has no answer."""
+        return self.send_quiet(f"patch_get {self.instance} {self.path_uris[symbol]}")
+
+    def send_path(self, zctrl):
+        """Give the plugin the file; patch_get tells whether it kept it, and a plugin that did not is said."""
+        line = self.path_line(zctrl)
+        if not line or self.send(line) is None:
+            return False
+        kept = self.read_path(zctrl.symbol)
+        if kept != zctrl.value:
+            logging.warning(f"plugin-hostd {self.plugin_name} was given {zctrl.value} for {zctrl.symbol} and reports {kept}")
+            return False
+        return True
 
     # ---- Compare ----
     # Compare A/B/C/D and undo are omx-panel's (its docs/compare.md), one module for every host: here its command is run, its
@@ -1678,6 +1751,9 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         if self.send(f'preset_save {self.instance} {path} {zynthian_plugin_hostd_protocol.quote(name)}') is None:
             return None
         self.preset_key = path
+        files = {self.path_uris[s]: z.value for s, z in self.path_zctrls.items() if z.value}
+        if files:
+            self.edit_preset_file(path, patch=files)
         for processor in self.processors:
             if not processor.bank_list:
                 processor.get_bank_list()
@@ -1697,8 +1773,25 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         if not preset or not preset[0] or self.send(f"preset_load {self.instance} {preset[0]}") is None:
             return False
         self.preset_key = preset[0]
+        self.load_preset_files(preset[0])
         self.refresh_values()
         return True
+
+    def load_preset_files(self, key):
+        """The files a user preset names (its "patch" member, written by save_preset) go to the plugin."""
+        if not self.path_zctrls or not os.path.isfile(key):
+            return
+        try:
+            with open(key) as fh:
+                files = json.load(fh).get("patch") or {}
+        except (OSError, ValueError, AttributeError) as e:
+            log_once(("user-preset", key), "a user preset of %s cannot be read (%s): %s", self.plugin_name, key, e)
+            return
+        for symbol, zctrl in self.path_zctrls.items():
+            path = files.get(self.path_uris[symbol])
+            if path:
+                zctrl.set_value(path, False)
+                self.send_path(zctrl)
 
     def cmp_presets(self, preset1, preset2):
         try:
