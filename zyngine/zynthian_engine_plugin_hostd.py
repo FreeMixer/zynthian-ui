@@ -53,6 +53,8 @@ COMPARE_QUEUE = 64  # steps waiting for the next omx-panel run, its ring's bound
 RUN_NUMBERS = 1000  # a chain's serial runs numbered to the daemon, see run_number
 # The verb that tells plugin-hostd the user chose a plugin below our bar (its pin refused, or it crashed in qualification)
 ACCEPT_VERB = "pin_accept"
+REVOKE_VERB = "pin_clear"
+RELOAD_VERB = "pin_reload"
 # Below-bar reasons that run a plugin in a worker of its own
 ISOLATE_REASONS = ("refused", "crashed", "hung")
 qualification = zynthian_plugin_qualification.qualification()
@@ -355,6 +357,17 @@ class plugin_hostd_daemon:
             self.call(f"{ACCEPT_VERB} {uri_word(uri)}")
         except plugin_hostd_error as e:
             logging.warning(f"plugin-hostd {ACCEPT_VERB} {uri} => {e}")
+
+    def revoke_below_bar(self, uri):
+        """The bar is qualified only: take back the user's choice the daemon may keep of this plugin, from an earlier time
+        under a lower bar (the daemon keeps it across restarts), so its pin is refused again and the add says why. The one
+        place that names the verbs: pin_clear forgets the pin with the choice, so the pin file is read again (pin_reload) to
+        put its refusal back. A refusal is logged and the add goes on."""
+        try:
+            self.call(f"{REVOKE_VERB} {uri_word(uri)}")
+            self.call(RELOAD_VERB)
+        except plugin_hostd_error as e:
+            logging.warning(f"plugin-hostd {REVOKE_VERB} {uri} => {e}")
 
     def add(self, engine, uri, placement=None):
         """Add the plugin under the first free instance number and register the engine. placement: own for a plugin
@@ -1152,9 +1165,12 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             logging.warning(f"Can't read the qualification of {self.plugin_uri} => {e}")
             return None
         reason = zynthian_plugin_tiers.place(facts).reason
-        if reason == "refused" and zynthian_plugin_tiers.plugin_bar() != "qualified-only":
-            # qualified-only is the user saying no to plugins below the bar: the pin stays refused and the add says why
-            daemon.accept_below_bar(self.plugin_uri)
+        if reason == "refused":
+            if zynthian_plugin_tiers.plugin_bar() != "qualified-only":
+                daemon.accept_below_bar(self.plugin_uri)
+            else:
+                # qualified-only is the user saying no to plugins below the bar: the pin is refused again and the add says why
+                daemon.revoke_below_bar(self.plugin_uri)
         return "own" if reason in ISOLATE_REASONS or facts.rt_safe is False else None
 
     def main_widths(self):

@@ -172,7 +172,7 @@ class zynthian_gui_admin(zynthian_gui_selector_info):
                                        ["RBPi onboard headphone output (Lo-Fi) is disabled", "headphones.png"]))
 
         self.list_data.append((self.plugin_bar_menu, 0, "Plugin bar",
-                               ["What the plugin lists do with a plugin that did not pass qualification.\nQualified only: they are not listed.\nWarn on crashes: listed after the others, and one that crashed asks first.\nLoad all: listed after the others, nothing asked.\nA plugin below the bar runs in plugin-hostd in a worker of its own, never in another host. Saved, and applied at once.", "audio_options.png"]))
+                               ["What the plugin lists do with a plugin that did not pass qualification.\nQualified only: they are not listed, and a plugin you let in before is refused again.\nWarn on crashes: listed after the others, and one that crashed asks first.\nLoad all: listed after the others, nothing asked.\nA plugin below the bar runs in plugin-hostd in a worker of its own, never in another host. Saved, and applied at once.", "audio_options.png"]))
         self.list_data.append((self.hotplug_audio_menu, 0, "Hotplug USB Audio",
                                ["Configure hotplug USB audio interfaces.\nWhen enabled, USB audio interfaces will be detected and available. The main audio interface, that must always remain connected, is not included, nor the interface used for ZynVoice.", "audio_options.png"]))
 

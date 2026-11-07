@@ -94,8 +94,9 @@ engine2class = {
 # ----------------------------------------------------------------------------
 
 
-# plugin-hostd refusals that say nothing of the plugin: the next add may be taken
-TRANSIENT_REFUSALS = ("WORKER_SPAWN", "GAVE_UP", "VERB_DROPPED")
+# plugin-hostd refusals that say nothing of the plugin: the next add may be taken (PIN_REFUSED is the user's bar: lowered,
+# the plugin loads, so the menu keeps no mark on it)
+TRANSIENT_REFUSALS = ("WORKER_SPAWN", "GAVE_UP", "VERB_DROPPED", "PIN_REFUSED")
 
 
 class zynthian_chain_manager:

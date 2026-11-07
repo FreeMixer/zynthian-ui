@@ -36,7 +36,8 @@
 # list options) says what the menus do with a plugin below it: qualified-only lists only the plugins that passed
 # (no below-bar and no unqualified ones); warn-on-crashes, the default, lists every plugin, the ones below the bar
 # after the others with their mark, and asks before adding one whose qualification recorded a crash; load-all lists
-# them the same and asks nothing. A below-bar plugin that is added runs in plugin-hostd in a worker of its own. A
+# them the same and asks nothing. Under qualified-only a plugin the user let in before is refused again (plugin-hostd's
+# pin_clear). A below-bar plugin that is added runs in plugin-hostd in a worker of its own. A
 # plugin-hostd pin judges plugin-hostd's rows only: a jalv row (JV/), there when the user chose jalv, is placed
 # without it. An entry the catalogue or a refused add marked NOT_WORKING (it does not load at all) is listed last,
 # greyed, with its word; the detail panel says why. A below-bar row carries the style BELOW (the screen paints it in

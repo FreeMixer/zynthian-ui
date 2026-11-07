@@ -312,6 +312,18 @@ class fake_plugin_hostd:
         self.accepted = getattr(self, "accepted", set()) | {uri}
         return "resp 0"
 
+    def verb_pin_clear(self, uri):
+        """The user's choice taken back (or every one, with all), and the pin with it: as the daemon does, a refused pin
+        of the pin_file is forgotten too, until pin_reload reads the file again."""
+        keys = set(PLUGINS) if uri == "all" else {grammar.pin_key(uri)}
+        self.accepted = getattr(self, "accepted", set()) - keys
+        self.cleared = getattr(self, "cleared", set()) | keys
+        return "resp 0"
+
+    def verb_pin_reload(self):
+        self.cleared = set()
+        return "resp 0"
+
     def verb_add(self, uri, instance, *rest):
         uri = grammar.pin_key(uri)
         n = int(instance)
@@ -319,7 +331,7 @@ class fake_plugin_hostd:
             return "resp -2"
         if uri not in PLUGINS:
             return "resp -101"
-        if uri in self.REFUSED and uri not in getattr(self, "accepted", set()):
+        if uri in self.REFUSED and uri not in getattr(self, "accepted", set()) and uri not in getattr(self, "cleared", set()):
             return "resp -516"
         self.instances[n] = uri
         self.params[n] = {s: p[4] for s, p in PLUGINS[uri]["params"].items()}
