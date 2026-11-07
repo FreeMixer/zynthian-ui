@@ -1218,6 +1218,7 @@ def get_plugin_ports(plugin_url):
             'is_integer': is_integer,
             'is_enumeration': is_enumeration,
             'is_logarithmic': is_logarithmic,
+            'uri': str(control),  # the patch property's URI, which patch_set names; a port has none
             'is_path': is_path,
             'path_file_types': path_file_types,
             'path_preload': path_preload,
