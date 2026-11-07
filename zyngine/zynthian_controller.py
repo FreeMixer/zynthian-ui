@@ -595,10 +595,16 @@ class zynthian_controller:
             logging.error(e)
             return 0
 
+    def _cc_travel(self):
+        # the travel a plugin-hostd control's CC runs over: its position law between the CC range's ends
+        return dict(self.position_law, min=self.midi_cc_val1, max=self.midi_cc_val2)
+
     def get_ctrl_midi_val(self):
         try:
             if self.midi_cc_range == 0:
                 return 0
+            elif self.position_law:
+                val = max(0, min(127, int(127 * position_law.scale_position(self._cc_travel(), self.value) + 1e-9)))
             elif self.is_logarithmic:
                 val = int(127 * math.log10((9 * self.value - (10 * self.midi_cc_val1 - self.midi_cc_val2)) / self.midi_cc_range))
             else:
@@ -675,7 +681,9 @@ class zynthian_controller:
                     else:
                         value = self.value_min
             else:
-                if self.is_logarithmic:
+                if self.position_law:
+                    value = position_law.scale_value(self._cc_travel(), val / 127)
+                elif self.is_logarithmic:
                     value = self.midi_cc_val1 + self.midi_cc_range * (math.pow(10, val/127) - 1) / 9
                 else:
                     value = self.midi_cc_val1 + val * self.midi_cc_range / 127
@@ -715,7 +723,10 @@ class zynthian_controller:
                     logging.error(f"Wrong MIDI CC mode {self.midi_cc_mode}")
                     return
 
-            if self.is_logarithmic:
+            if self.position_law:
+                pos = position_law.scale_position(self._cc_travel(), self.value) + dval / 127
+                value = position_law.scale_value(self._cc_travel(), min(1, max(0, pos)))
+            elif self.is_logarithmic:
                 if dval > 0:
                     value = self.value * (1 + dval/10)
                 else:

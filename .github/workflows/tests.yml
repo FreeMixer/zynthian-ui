@@ -33,7 +33,19 @@ jobs:
         run: |
           apt-get install -y -qq --no-install-recommends plugin-hostd omx-contract-data
           dpkg-query -W plugin-hostd omx-contract-data
-          test -f /usr/share/omx-contract/scale-vectors.json
+          # the channel's omx-contract-data carries the vectors from omx-contract's release on; until then they come
+          # from a named commit of omx-contract main, and the log says so
+          if [ -f /usr/share/omx-contract/scale-vectors.json ]; then
+            echo "VECTORS FROM INSTALLED PACKAGE"
+          else
+            SHA=2fccea15473353f8603c5d21bbe4b12dec5b7245
+            apt-get install -y -qq --no-install-recommends git ca-certificates
+            git clone -q https://github.com/FreeMixer/omx-contract /tmp/omx-contract
+            git -C /tmp/omx-contract checkout -q "$SHA"
+            test -f /tmp/omx-contract/data/scale-vectors.json
+            echo "ZYNTHIAN_OMX_SCALE_VECTORS=/tmp/omx-contract/data/scale-vectors.json" >> "$GITHUB_ENV"
+            echo "VECTORS FROM BRANCH $SHA"
+          fi
 
       - uses: actions/checkout@v4
 
