@@ -54,6 +54,7 @@ RUN_NUMBERS = 1000  # a chain's serial runs numbered to the daemon, see run_numb
 # The verb that tells plugin-hostd the user chose a plugin below our bar (its pin refused, or it crashed in qualification)
 ACCEPT_VERB = "pin_accept"
 REVOKE_VERB = "pin_clear"
+RELOAD_VERB = "pin_reload"
 # Below-bar reasons that run a plugin in a worker of its own
 ISOLATE_REASONS = ("refused", "crashed", "hung")
 qualification = zynthian_plugin_qualification.qualification()
@@ -360,9 +361,11 @@ class plugin_hostd_daemon:
     def revoke_below_bar(self, uri):
         """The bar is qualified only: take back the user's choice the daemon may keep of this plugin, from an earlier time
         under a lower bar (the daemon keeps it across restarts), so its pin is refused again and the add says why. The one
-        place that names the verb. A refusal is logged and the add goes on."""
+        place that names the verbs: pin_clear forgets the pin with the choice, so the pin file is read again (pin_reload) to
+        put its refusal back. A refusal is logged and the add goes on."""
         try:
             self.call(f"{REVOKE_VERB} {uri_word(uri)}")
+            self.call(RELOAD_VERB)
         except plugin_hostd_error as e:
             logging.warning(f"plugin-hostd {REVOKE_VERB} {uri} => {e}")
 
