@@ -21,6 +21,7 @@ import logging
 import tkinter
 
 from zyngine import zynthian_panel_gestures as gestures
+from zyngine import zynthian_touch_layer as touch
 from zyngui import zynthian_gui_config
 from zyngui.zynthian_widget_base import zynthian_widget_base
 
@@ -46,6 +47,12 @@ class zynthian_widget_omx_panel(zynthian_widget_base):
         c.bind("<Button-4>", self.on_wheel)
         c.bind("<Button-5>", self.on_wheel)
         c.bind("<Key>", self.on_key)
+        self.touch = self.slots = None
+        self.polling = False
+        try:  # Tk sees one pointer; a multi-touch screen's fingers come from the evdev slots (a pinch needs two)
+            self.touch = touch.EvdevSource()
+        except touch.NoTouchDevice as e:
+            logging.info("no multi-touch for the panel's pinch: %s", e)
 
     def zctrls(self):
         return [z for z in self.zyngui_control.zcontrollers if not getattr(z, "not_on_gui", False)]
@@ -57,6 +64,17 @@ class zynthian_widget_omx_panel(zynthian_widget_base):
         except gestures.GestureTableAbsent as e:
             self.panel, self.table_error = None, str(e)
             logging.error(e)
+        if self.touch and self.panel:
+            self.slots = touch.Slots(touch.route(self.panel), self.touch.ranges, (self.width, self.height))
+            if not self.polling:
+                self.polling = True
+                self.after(15, self.poll_touch)
+
+    def poll_touch(self):
+        if self.slots and self.touch.poll(self.slots):
+            self.refresh_gui()
+        if self.slots:
+            self.after(15, self.poll_touch)
 
     def on_size(self, event):
         if super().on_size(event):
