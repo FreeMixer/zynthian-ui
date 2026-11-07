@@ -1,0 +1,68 @@
+[
+  {
+    "section": null,
+    "sectionName": "Easy",
+    "pageName": "Easy",
+    "ids": [
+      "master",
+      "gain1",
+      "freq1",
+      null
+    ]
+  },
+  {
+    "section": 1,
+    "sectionName": "Band 1",
+    "pageName": "Band 1",
+    "ids": [
+      "q1",
+      "width1",
+      null,
+      null
+    ]
+  },
+  {
+    "section": 2,
+    "sectionName": "Band 2",
+    "pageName": "Band 2",
+    "ids": [
+      "freq2",
+      "gain2",
+      "q2",
+      "width2"
+    ]
+  },
+  {
+    "section": 3,
+    "sectionName": "Band 3",
+    "pageName": "Band 3",
+    "ids": [
+      "freq3",
+      "gain3",
+      "q3",
+      "width3"
+    ]
+  },
+  {
+    "section": 4,
+    "sectionName": "Tone",
+    "pageName": "Tone: Tone 1 - Tone 4",
+    "ids": [
+      "tone1",
+      "tone2",
+      "tone3",
+      "tone4"
+    ]
+  },
+  {
+    "section": 4,
+    "sectionName": "Tone",
+    "pageName": "Tone: Tone 5 - Tone 6",
+    "ids": [
+      "tone5",
+      "tone6",
+      null,
+      null
+    ]
+  }
+]

@@ -1,0 +1,341 @@
+{
+  "origin": "scanned",
+  "plugin": {
+    "id": "urn:test:eq",
+    "format": "lv2",
+    "uri": "urn:test:eq",
+    "name": "Eq",
+    "features": [
+      "audio-effect"
+    ]
+  },
+  "controls": [
+    {
+      "id": "master",
+      "name": "Master",
+      "kind": "travel",
+      "travel": {
+        "min": -20,
+        "max": 20,
+        "unit": "dB",
+        "default": 0.0,
+        "scale": "linear"
+      },
+      "group": [
+        "Output"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "freq1",
+      "name": "Freq 1",
+      "kind": "travel",
+      "travel": {
+        "min": 20,
+        "max": 20000,
+        "unit": "Hz",
+        "default": 1000,
+        "scale": "log"
+      },
+      "group": [
+        "Band 1"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "gain1",
+      "name": "Gain 1",
+      "kind": "travel",
+      "travel": {
+        "min": -20,
+        "max": 20,
+        "unit": "dB",
+        "default": 0,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 1"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "q1",
+      "name": "Q 1",
+      "kind": "travel",
+      "travel": {
+        "min": 0.1,
+        "max": 10,
+        "unit": "-",
+        "default": 1,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 1"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "width1",
+      "name": "Width 1",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 1"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "freq2",
+      "name": "Freq 2",
+      "kind": "travel",
+      "travel": {
+        "min": 20,
+        "max": 20000,
+        "unit": "Hz",
+        "default": 1000,
+        "scale": "log"
+      },
+      "group": [
+        "Band 2"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "gain2",
+      "name": "Gain 2",
+      "kind": "travel",
+      "travel": {
+        "min": -20,
+        "max": 20,
+        "unit": "dB",
+        "default": 0,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 2"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "q2",
+      "name": "Q 2",
+      "kind": "travel",
+      "travel": {
+        "min": 0.1,
+        "max": 10,
+        "unit": "-",
+        "default": 1,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 2"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "width2",
+      "name": "Width 2",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 2"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "freq3",
+      "name": "Freq 3",
+      "kind": "travel",
+      "travel": {
+        "min": 20,
+        "max": 20000,
+        "unit": "Hz",
+        "default": 1000,
+        "scale": "log"
+      },
+      "group": [
+        "Band 3"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "gain3",
+      "name": "Gain 3",
+      "kind": "travel",
+      "travel": {
+        "min": -20,
+        "max": 20,
+        "unit": "dB",
+        "default": 0,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 3"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "q3",
+      "name": "Q 3",
+      "kind": "travel",
+      "travel": {
+        "min": 0.1,
+        "max": 10,
+        "unit": "-",
+        "default": 1,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 3"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "width3",
+      "name": "Width 3",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Band 3"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "tone1",
+      "name": "Tone 1",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Tone"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "tone2",
+      "name": "Tone 2",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Tone"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "tone3",
+      "name": "Tone 3",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Tone"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "tone4",
+      "name": "Tone 4",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Tone"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "tone5",
+      "name": "Tone 5",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Tone"
+      ],
+      "meaning": "unknown"
+    },
+    {
+      "id": "tone6",
+      "name": "Tone 6",
+      "kind": "travel",
+      "travel": {
+        "min": 0,
+        "max": 1,
+        "unit": "-",
+        "default": 0.5,
+        "scale": "linear"
+      },
+      "group": [
+        "Tone"
+      ],
+      "meaning": "unknown"
+    }
+  ],
+  "ports": [
+    {
+      "id": "in_1",
+      "name": "In",
+      "kind": "audio",
+      "direction": "in",
+      "role": "main",
+      "channels": 1
+    },
+    {
+      "id": "out_1",
+      "name": "Out",
+      "kind": "audio",
+      "direction": "out",
+      "role": "main",
+      "channels": 1
+    }
+  ],
+  "easy": [
+    "master",
+    "gain1",
+    "freq1"
+  ]
+}

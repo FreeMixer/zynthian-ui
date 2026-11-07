@@ -684,8 +684,11 @@ class zynthian_processor:
         """
 
         zctrls = []
+        blank = getattr(self.engine, "blank_slots", False)  # an engine that keeps a hidden control's slot, blank
         for k in ctrl_keys:
-            if k:
+            if k is None and blank:
+                zctrls.append(None)
+            elif k:
                 try:
                     zctrls.append(self.controllers_dict[k])
                 except:
