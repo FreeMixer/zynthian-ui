@@ -1031,48 +1031,54 @@ def plan_refused(chain_id, members, e):
 
 # ---- Controller pages from omx-panel's layout of the plugin's descriptor ----
 
-layout_cache = {}  # (descriptor path, mtime) => (pages, layout controls by param)
+SURFACE_WIDTH = 4  # the controls a Zynthian screen shows, one per encoder: the one declaration of the page width here
+
+layout_cache = {}  # (descriptor path, mtime, width, remote) => (pages, the description's controls by symbol)
 
 
-layout_help = {}  # omx-panel binary => what its `layout --help` says, to know the options it takes
+def symbol_of(param):
+    """omx-panel's name for a parameter id: a CLAP parameter's number is p<number>, an LV2 port keeps its symbol."""
+    return param if isinstance(param, str) else f"p{param}"
 
 
-def panel_takes(panel, option):
-    """Detect once whether the installed omx-panel's layout takes an option: --per-page (pages of the Zynthian's four
-    encoders), --easy-first (the Easy controls first)."""
-    if panel not in layout_help:
-        try:
-            out = subprocess.run([panel, "layout", "--help"], capture_output=True, text=True, timeout=30)
-            layout_help[panel] = out.stdout + out.stderr
-        except (OSError, subprocess.SubprocessError):
-            layout_help[panel] = ""
-    return option in layout_help[panel]
-
-
-def panel_layout(path):
+def panel_layout(path, width=None, remote=None):
+    """omx-panel's cut of the plugin's descriptor into pages of `width` slots (the Zynthian screen's, unless a surface
+    names its own): `describe --pages --per-page <width>`, the skin applied, the Easy controls first, the groups kept
+    whole, a hidden control's slot left blank (None). The host's remote-controls pages, when it has them, are handed
+    over as `--remote`. Returns (pages, {symbol: the description's control}), or None with the reason logged."""
+    width = width or SURFACE_WIDTH
     try:
-        key = (path, os.stat(path).st_mtime)
+        key = (path, os.stat(path).st_mtime, width, json.dumps(remote))
     except OSError:
         return None
     if key in layout_cache:
         return layout_cache[key]
     panel = shutil.which("omx-panel")
     if not panel:
-        log_once("omx-panel", "omx-panel is not installed: plugin-hostd pages follow the parameter order")
+        log_once("omx-panel", "omx-panel is not installed: plugin-hostd has no controller pages")
         return None
-
-    def run(*extra):
-        cmd = [panel, "layout", "--descriptor", path, *extra]
-        return json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30).stdout)
-
+    remote_file = None
     try:
-        layout = run()
-        easy = ["--easy-first"] if panel_takes(panel, "--easy-first") else []
-        pages = run("--pages", "--per-page", "4", *easy) if panel_takes(panel, "--per-page") else run("--pages", *easy)
-    except (OSError, ValueError, subprocess.SubprocessError) as e:
-        log_once(("omx-panel", path), "omx-panel layout of %s failed (%s): pages follow the parameter order", path, e)
+        extra = []
+        if remote:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+                json.dump(remote, f)
+                remote_file = f.name
+            extra = ["--remote", remote_file]
+
+        def run(*args):
+            cmd = [panel, "describe", "--descriptor", path, *args]
+            return json.loads(subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=30).stdout)
+
+        pages = run("--pages", "--per-page", str(width), *extra)
+        controls = run()["description"].get("controls", [])
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
+        log_once(("omx-panel", path), "omx-panel describe of %s failed (%s): plugin-hostd has no controller pages", path, e)
         return None
-    layout_cache[key] = (pages, {str(c["param"]): c for c in layout.get("controls", [])})
+    finally:
+        if remote_file:
+            os.unlink(remote_file)
+    layout_cache[key] = (pages, {str(c["symbol"]): c for c in controls})
     return layout_cache[key]
 
 
@@ -1136,6 +1142,7 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
         self.labels = {}
         self._ctrls = []
         self._ctrl_screens = []
+        self.screen_pages = []
         self.options['ctrl_fb'] = False
 
     def add_processor(self, processor):
@@ -1343,9 +1350,9 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
                  "default": p["value"]}, "kind": "toggle" if p["is_toggled"] else "travel"})
                 for p in ports if not p.get("is_path")]
 
-    def remote_pages(self, dcontrols):
-        """The plugin's own remote-control pages (clap.remote-controls), whatever its format calls them:
-        [(page name, [(symbol, label, unit, descriptor control)])], empty when it has none or the daemon cannot say."""
+    def remote_ids(self, dcontrols):
+        """The plugin's own remote-control pages (clap.remote-controls) as the host reports them, for omx-panel's cut:
+        [{"name", "ids"}], a slot a control's id or None. Empty when it has none or the daemon cannot say."""
         if self.instance is None:
             return []
         try:
@@ -1361,95 +1368,69 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
             # <page_id> <section> <page_name> then eight slots, "-" for an empty one
             if len(words) < 3:
                 continue
-            rows = []
-            for symbol in words[3:]:
-                dc = dcontrols.get(symbol, {})
-                if symbol != "-" and not dc.get("readonly"):
-                    rows.append((symbol, dc.get("label") or dc.get("name") or symbol, None, dc))
-            if rows:
-                result.append((words[2] or words[1], rows))
+            ids = [None if w == "-" else dcontrols[w]["id"] if w in dcontrols else int(w) if w.isdigit() else w for w in words[3:]]
+            if any(i is not None for i in ids):
+                result.append({"name": words[2] or words[1], "ids": ids})
         return result
 
-    def pages(self):
-        """[(page name, [(symbol, label, unit, descriptor control)])]: omx-panel's Easy pages, the plugin's remote pages
-        when it has them, then omx-panel's pages of four (of eight when it can't), else the plain parameter order cut in eights.
-        A control is on the first page that shows it: the layout pages keep what the remote pages left out."""
+    def pages(self, width=None):
+        """[(page name, [slot])] as omx-panel cuts the plugin's description at `width` (the Zynthian screen's): every page has
+        exactly `width` slots, a slot (symbol, label, unit, descriptor control) or None where the control is hidden, read-only
+        or empty. Nothing here builds, merges, reorders or cuts a page."""
+        width = width or SURFACE_WIDTH
         path = self.descriptor_path()
-        path = self.descriptor_path()
-        dcontrols = {}
+        dcontrols, ids = {}, {}
         if path:
             try:
                 with open(path) as f:
                     for c in json.load(f).get("controls", []):
                         dcontrols[str(c["id"])] = c
-            except (OSError, ValueError, KeyError):
-                pass
-        result, seen = [], set()
-        easy, layout = self.layout_pages(path)
-        for name, rows in easy + self.remote_pages(dcontrols) + layout:
-            rows = [r for r in rows if r[0] not in seen]
-            seen.update(r[0] for r in rows)
-            if rows:
-                result.append((name, rows))
-        return result
-
-    def layout_pages(self, path):
-        """The pages of the plugin's descriptor, as (the Easy pages, the others): omx-panel's, else the parameter order cut in eights."""
-        dlist, dcontrols = [], {}
-        if path:
-            try:
-                with open(path) as f:
-                    dlist = json.load(f).get("controls", [])
-                for c in dlist:
-                    dcontrols[str(c["id"])] = c
+                        ids[symbol_of(c["id"])] = str(c["id"])
             except (OSError, ValueError, KeyError) as e:
                 logging.error(f"Can't read descriptor {path} => {e}")
-        layout = panel_layout(path) if path else None
-        if layout:
-            easy, result = [], []
-            for page in layout[0]:
-                rows = []
-                for pid in filter(None, page["ids"]):
-                    lc, dc = layout[1].get(str(pid), {}), dcontrols.get(str(pid), {})
-                    if lc.get("widget") in ("meter", "display") or dc.get("readonly"):
-                        continue
-                    # The daemon addresses a parameter by the descriptor's id (a CLAP parameter's number, an LV2
-                    # port's symbol); the layout's symbol is omx-panel's own name for it (p<number> for CLAP)
-                    rows.append((str(pid), lc.get("label") or dc.get("name"), lc.get("unit"), dc))
-                if rows:
-                    # An Easy page belongs to no section of the plugin
-                    (easy if page.get("section") is None else result).append((page.get("pageName") or page.get("sectionName"), rows))
-            return easy, result
-        rows = [(s, n, None, c) for s, n, c in self.param_list(dlist) if not c.get("hidden") and not c.get("readonly")]
-        if len(rows) <= 8:
-            return [], [("Params", rows)] if rows else []
-        return [], [(f"Page {i // 8 + 1}", rows[i:i + 8]) for i in range(0, len(rows), 8)]
+        cut = panel_layout(path, width, self.remote_ids(dcontrols)) if path else None
+        if not cut:
+            return []
+        result = []
+        for page in cut[0]:
+            slots = []
+            for pid in page["ids"]:
+                key = None if pid is None else str(pid)
+                dc, lc = dcontrols.get(key, {}), cut[1].get(symbol_of(pid), {}) if pid is not None else {}
+                if key is None or lc.get("widget") in ("meter", "display") or dc.get("readonly"):
+                    slots.append(None)  # the slot stays, blank
+                else:
+                    slots.append((key, lc.get("label") or dc.get("name"), None, dc))
+            if any(slots) or all(i is None for i in page["ids"]):
+                result.append((page.get("pageName") or page.get("sectionName"), slots))
+        return result
+
+    blank_slots = True  # a screen keeps a hidden control's slot, blank (processor.build_ctrl_screen)
 
     def generate_ctrl_screens(self, zctrl_dict):
-        """A page holds more controls than the four encoders: each of its screens is named by what is on it
-        ("Band 1: Freq Gain Q Type", "Band 1: On"), not by a numbered suffix."""
-        first = len(self._ctrl_screens)
-        super().generate_ctrl_screens(zctrl_dict)
-        added = self._ctrl_screens[first:]
-        by_group = {}
-        for screen in added:
-            by_group.setdefault(zctrl_dict[screen[1][0]].group_symbol, []).append(screen)
-        for screens in by_group.values():
-            if len(screens) > 1:
-                group = zctrl_dict[screens[0][1][0]].group_name
-                for screen in screens:
-                    labels = [self.labels.get(symbol) or zctrl_dict[symbol].name for symbol in screen[1]]
-                    screen[0] = f"{group}: {' '.join(labels)}"
+        """The screens are omx-panel's pages as they come: the page's name, its slots in order, a blank slot None. The base
+        cutter, which would cut by group in fours and close every gap, is not asked."""
+        if zctrl_dict is not self.zctrls:
+            return super().generate_ctrl_screens(zctrl_dict)  # the signal-path controls are no plugin page
+        names = set()
+        for name, rows in self.screen_pages:
+            while name in names:
+                name += " +"
+            names.add(name)
+            self._ctrl_screens.append([name, [slot[0] if slot and slot[0] in zctrl_dict else None for slot in rows]])
 
     def build_controllers(self):
-        """A zctrl per control, grouped by page: generate_ctrl_screens cuts each page in screens of four.
-        Unit, scale and range come from param_info when it answers, else from the descriptor."""
+        """A zctrl per control, grouped by the page that first shows it: each page of omx-panel's cut is one screen
+        (generate_ctrl_screens). Unit, scale and range come from param_info when it answers, else from the descriptor."""
         zctrls = {}
-        pages = self.pages()
+        pages = self.screen_pages = self.pages()
         priority = sum(len(rows) for _, rows in pages) + 1
-        values = self.read_values(symbol for _, rows in pages for symbol, *_ in rows)
+        values = self.read_values(slot[0] for _, rows in pages for slot in rows if slot)
         for k, (page_name, rows) in enumerate(pages):
-            for symbol, label, unit, meta in rows:
+            for slot in rows:
+                if slot is None or slot[0] in zctrls:  # a blank slot; a control on a second page is the first's
+                    continue
+                symbol, label, unit, meta = slot
                 travel = meta.get("travel", {})
                 o = {"min": travel.get("min", 0.0), "max": travel.get("max", 1.0), "unit": unit or travel.get("unit"),
                      "default": travel.get("default", meta.get("default", 0.0)), "scale": travel.get("scale", "linear")}
@@ -1638,9 +1619,9 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
 
     def compare_options(self):
         """The rows of the processor's options: [(the step, title, help)]. None without an omx-panel that has it, the release
-        of --easy-first, or a control to compare."""
+        of the compare verbs, or a control to compare."""
         panel = shutil.which("omx-panel")
-        if not panel or not panel_takes(panel, "--easy-first") or not self.compare_values():
+        if not panel or not self.compare_values():
             return []
         active = self.compare_doc["active"] if self.compare_doc else COMPARE_SLOTS[0]
         rows = [(("switch", s), f"{chr(0x2612) if s == active else chr(0x2610)} Compare {s}",

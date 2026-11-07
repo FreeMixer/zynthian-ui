@@ -13,6 +13,7 @@ import sys
 import json
 import time
 import types
+import shutil
 import signal
 import socket
 import logging
@@ -103,12 +104,17 @@ class plugin_hostd_case(unittest.TestCase):
         self.bin = os.path.join(self.tmp, "bin")
         os.mkdir(self.bin)
         os.symlink(sys.executable, os.path.join(self.bin, "python3"))
+        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))  # the pages are omx-panel's
         self.starts = os.path.join(self.tmp, "starts")
         patcher = mock.patch.dict(os.environ, {
             "PATH": self.bin, "FAKE_HOSTD_JOURNAL": os.path.join(self.tmp, "journal"),
             "START_STUB_LOG": self.starts, "START_STUB_DIR": self.tmp, "ZYNTHIAN_PLUGIN_ENGINE": "plugin-hostd"})
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.auto = self.auto_descriptors()
+        with open(os.path.join(self.tmp, "auto.json"), "w") as f:
+            json.dump(self.auto, f)
+        os.environ["FAKE_HOSTD_DESCRIPTORS"] = os.path.join(self.tmp, "auto.json")  # for a daemon the start script runs
         self.port = free_port()
         ph.daemon = ph.plugin_hostd_daemon(self.port)
         ph.daemon.start_script = os.path.join(self.tmp, "not-installed")
@@ -116,7 +122,6 @@ class plugin_hostd_case(unittest.TestCase):
         self.addCleanup(lambda: (ph.daemon.stop(), ph.daemon.client.close()))
         ph._logged.clear()
         ph.layout_cache.clear()
-        ph.layout_help.clear()
         os.environ.pop("OMX_PANEL_STUB_OLD", None)
         ph.probe_cache.clear()
         ph.DESCRIPTOR_WAIT = 0.5
@@ -134,8 +139,24 @@ class plugin_hostd_case(unittest.TestCase):
         self.sm.chain_manager.chains = {}
         self.next_id = 1
 
+    def auto_descriptors(self):
+        """A plugin of the fake with no descriptor of the test's own is described from its parameters, as a scan would."""
+        auto = {}
+        for uri, plugin in fake_plugins.items():
+            path = os.path.join(self.tmp, "auto-" + re.sub(r"\W", "_", uri) + ".descriptor.json")
+            controls = [{"id": (int(k) if k.isdigit() else k), "name": k.capitalize(), "kind": "travel",
+                         "travel": {"min": v[2], "max": v[3], "unit": v[0], "default": v[4], "scale": v[1]},
+                         "group": ["Params"], "meaning": "unknown"} for k, v in plugin["params"].items()]
+            with open(path, "w") as f:
+                json.dump({"origin": "scanned", "plugin": {"id": uri, "format": "lv2", "uri": uri, "name": uri}, "controls": controls}, f)
+            auto[uri] = path
+        return auto
+
     def serve(self, **kw):
-        fake = fake_plugin_hostd(self.port, **kw).start()
+        # a plugin of the fake with no descriptor of the test's own is described from its parameters, as a scan would
+        given = kw.pop("descriptors", None)
+        descriptors = self.auto_descriptors() if given is None else dict(given)  # the fake's plugins as they are now
+        fake = fake_plugin_hostd(self.port, descriptors=descriptors, **kw).start()
         self.addCleanup(fake.stop)
         return fake
 
@@ -955,38 +976,76 @@ class test_pages(plugin_hostd_case):
     def big(self):
         return self.serve(descriptors={"urn:test:big": os.path.join(FIXTURES, "big.descriptor.json")})
 
-    def test_without_per_page_support_more_than_four_controls_are_screens_named_by_content(self):
-        os.environ["OMX_PANEL_STUB_OLD"] = "1"
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
+    def recorded(self, name, width):
+        """What the real omx-panel printed for the descriptor: [(page name, [symbol or None])] as the engine names them."""
+        with open(os.path.join(FIXTURES, f"{name}.pages{width}.json")) as f:
+            return [(p.get("pageName") or p["sectionName"], [None if i is None else str(i) for i in p["ids"]]) for p in json.load(f)]
+
+    def screens(self, proc):
+        return [(n, k) for n, k in proc.engine._ctrl_screens]
+
+    def test_the_screens_are_omx_panels_pages_of_four_as_they_come(self):
         runs = os.path.join(self.tmp, "omx-panel.log")
         os.environ["OMX_PANEL_STUB_LOG"] = runs
         self.big()
         proc = self.add(self.chain(), "PH/Big")
-        self.assertEqual(proc.engine._ctrl_screens, [
-            ["Main 1: Freq 0 Freq 1 Freq 2 Freq 3", ["p0", "p1", "p2", "p3"]],
-            ["Main 1: Freq 4 Freq 5 Freq 6 Freq 7", ["p4", "p5", "p6", "p7"]], ["Main 2", ["p8", "p9"]]])
-        self.assertEqual([z.symbol for z in proc.get_ctrl_screen("Main 2")], ["p8", "p9"])
+        want = self.recorded("big", 4)
+        # the meters `gr` and `out` are read-only: their slots stay, blank
+        self.assertEqual(self.screens(proc), [("Easy", ["p0", "p1", "p2", "p3"]), ("Main: Freq 4 - Freq 7", ["p4", "p5", "p6", "p7"]),
+                                              ("Main: Freq 8 - Output Level", ["p8", "p9", None, None])])
+        self.assertEqual([n for n, _ in self.screens(proc)], [n for n, _ in want])
+        self.assertTrue(all(len(k) == 4 for _, k in self.screens(proc)), "every screen is exactly four slots")
+        self.assertEqual([z.symbol if z else None for z in proc.get_ctrl_screen("Main: Freq 8 - Output Level")], ["p8", "p9", None, None])
         p0 = proc.controllers_dict["p0"]
-        self.assertEqual((p0.name, p0.value_min, p0.value_max, p0.group_name), ("Freq 0 Hz", 0, 100, "Main 1"))
+        self.assertEqual((p0.name, p0.value_min, p0.value_max, p0.group_name), ("Freq 0 Hz", 0, 100, "Easy"))
         self.assertNotIn("gr", proc.controllers_dict, "a meter is not a control")
+        with open(runs) as f:
+            first = f.read().splitlines()
+        self.assertEqual(first[0].split()[0], "describe")
+        self.assertEqual(first[0].split()[-3:], ["--pages", "--per-page", "4"])
         self.add(self.chain(2), "PH/Big")
         with open(runs) as f:
-            self.assertEqual(len(f.readlines()), 2, "the layout is cached per descriptor")
+            self.assertEqual(len(f.readlines()), len(first), "the cut is cached per descriptor")
         os.utime(os.path.join(FIXTURES, "big.descriptor.json"))
         self.add(self.chain(3), "PH/Big")
         with open(runs) as f:
-            self.assertEqual(len(f.readlines()), 4, "a changed descriptor is laid out again")
+            self.assertEqual(len(f.readlines()), 2 * len(first), "a changed descriptor is cut again")
 
-    def test_with_per_page_support_omx_panel_names_the_pages_of_four(self):
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
-        runs = os.path.join(self.tmp, "omx-panel.log")
-        os.environ["OMX_PANEL_STUB_LOG"] = runs
-        self.big()
+    def eq(self, width=None):
+        self.serve(descriptors={"urn:test:big": os.path.join(FIXTURES, "eq.descriptor.json")})
+        return self.add(self.chain(), "PH/Big")
+
+    def test_the_same_controls_in_the_same_order_as_omx_panels_own_cut(self):
+        proc = self.eq()
+        want = self.recorded("eq", 4)
+        got = [(n, [s[0] if s else None for s in rows]) for n, rows in proc.engine.pages()]
+        self.assertEqual(got, want, "the engine adds, reorders and drops nothing")
+        self.assertEqual([k for _, k in self.screens(proc)], [k for _, k in want])
+        # Easy first, and a group is kept whole at four: Band 1's gain and frequency sit on the Easy page, its rest on its own
+        self.assertEqual(got[0], ("Easy", ["master", "gain1", "freq1", None]))
+        self.assertEqual(got[1], ("Band 1", ["q1", "width1", None, None]))
+
+    def test_the_surface_names_its_width_and_the_cut_follows(self):
+        proc = self.eq()
+        self.assertEqual([(n, [s[0] if s else None for s in rows]) for n, rows in proc.engine.pages(8)], self.recorded("eq", 8))
+        self.assertEqual(self.screens(proc)[0][0], "Easy")
+        self.assertEqual({len(k) for _, k in self.screens(proc)}, {ph.SURFACE_WIDTH})
+
+    def test_a_hidden_control_keeps_its_slot_blank(self):
+        base = os.path.join(self.tmp, "hid")
+        shutil.copy(os.path.join(FIXTURES, "eq.descriptor.json"), base + ".descriptor.json")
+        for kind in ("describe", "pages4", "pages8"):
+            shutil.copy(os.path.join(FIXTURES, f"eq.{kind}.json"), f"{base}.{kind}.json")
+        with open(base + ".pages4.json") as f:
+            pages = json.load(f)
+        band2 = next(p for p in pages if p["pageName"] == "Band 2")
+        band2["ids"][1] = None  # omx-panel's cut with the band's gain hidden by a governing control
+        with open(base + ".pages4.json", "w") as f:
+            json.dump(pages, f)
+        self.serve(descriptors={"urn:test:big": base + ".descriptor.json"})
         proc = self.add(self.chain(), "PH/Big")
-        self.assertEqual(proc.engine._ctrl_screens, [
-            ["Main 1", ["p0", "p1", "p2", "p3"]], ["Main 2", ["p4", "p5", "p6", "p7"]], ["Main 3", ["p8", "p9"]]])
-        with open(runs) as f:
-            self.assertEqual(f.read().splitlines()[1].split()[-4:], ["--pages", "--per-page", "4", "--easy-first"])
+        self.assertEqual(dict(self.screens(proc))["Band 2"], ["freq2", None, "q2", "width2"], "the others keep their slots")
+        self.assertEqual([z.symbol if z else None for z in proc.get_ctrl_screen("Band 2")], ["freq2", None, "q2", "width2"])
 
     REMOTE = "clap:/usr/lib/clap/test.clap#org.test.remote"
 
@@ -1006,68 +1065,44 @@ class test_pages(plugin_hostd_case):
             self.addCleanup(fake_plugins[self.REMOTE].__setitem__, "remote", saved)
         return fake
 
-    def test_the_plugins_remote_pages_come_first_and_the_layout_after_them(self):
+    def test_the_plugins_remote_pages_are_handed_to_omx_panel_and_come_back_as_given(self):
+        runs = os.path.join(self.tmp, "omx-panel.log")
+        os.environ["OMX_PANEL_STUB_LOG"] = runs
         self.remote()
         proc = self.add(self.chain(), "PH/" + self.REMOTE)
-        pages = proc.engine.pages()
-        self.assertEqual([(name, [r[0] for r in rows]) for name, rows in pages], [
-            ("Macros", ["3", "1", "2"]), ("Mixer", ["12"]),
-            ("Page 1", ["4", "5", "6", "7", "8"]), ("Page 2", ["9", "10", "11"])])
-        self.assertEqual([z.symbol for z in proc.get_ctrl_screen("Macros")], ["3", "1", "2"])
-        self.assertEqual(proc.engine._ctrl_screens[0][1], ["3", "1", "2"], "the first screen is the first remote page")
+        with open(runs) as f:
+            self.assertIn("--remote", f.read())
+        self.assertEqual(self.screens(proc), [("Macros", ["3", "1", None, "2"]), ("Mixer", ["12", "1", None, None])],
+                         "as declared: a control may sit on two pages, a slot of none is blank, nothing is merged here")
+        self.assertEqual([z.symbol if z else None for z in proc.get_ctrl_screen("Mixer")], ["12", "1", None, None])
 
-    def test_a_plugin_without_remote_pages_keeps_its_layout(self):
+    def test_a_plugin_without_remote_pages_is_cut_from_its_description(self):
+        runs = os.path.join(self.tmp, "omx-panel.log")
+        os.environ["OMX_PANEL_STUB_LOG"] = runs
         self.remote(pages=False)
         proc = self.add(self.chain(), "PH/" + self.REMOTE)
-        self.assertEqual([(n, len(r)) for n, r in proc.engine.pages()], [("Page 1", 8), ("Page 2", 4)])
+        with open(runs) as f:
+            self.assertNotIn("--remote", f.read())
+        self.assertEqual([len(k) for _, k in self.screens(proc)], [4, 4, 4])
 
     def test_a_clap_parameter_is_addressed_by_its_number_not_by_the_layouts_name(self):
         # omx-panel names a CLAP parameter p<number> in its layout; plugin-hostd knows it by the number alone
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
         uri = "clap:/usr/lib/clap/test.clap#org.test.synth"
         fake = self.serve(descriptors={uri: os.path.join(FIXTURES, "synth.descriptor.json")})
         proc = self.add(self.chain(), "PH/" + uri)
-        self.assertEqual([z.symbol for z in proc.get_ctrl_screen("Controls")], ["1", "2"])
+        self.assertEqual([z.symbol if z else None for z in proc.get_ctrl_screen("Easy")], ["1", "2", None, None])
         proc.controllers_dict["2"].set_value(3)
         self.assertEqual(fake.params[1000]["2"], 3.0, "the value reaches the plugin")
 
-    def five_controls_band(self, old):
-        with open(os.path.join(FIXTURES, "big.descriptor.json")) as f:
-            descriptor = json.load(f)
-        labels = {"p0": "Freq", "p1": "Gain", "p2": "Q", "p3": "Type", "p4": "On"}
-        for c in descriptor["controls"]:
-            c["group"] = ["Band 1"] if c["id"] in labels else ["Filter"]
-            c["name"] = labels.get(c["id"], c["name"])
-        path = os.path.join(self.tmp, "band.descriptor.json")
-        with open(path, "w") as f:
-            json.dump(descriptor, f)
-        if old:
-            os.environ["OMX_PANEL_STUB_OLD"] = "1"
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
-        self.serve(descriptors={"urn:test:big": path})
-        proc = self.add(self.chain(), "PH/Big")
-        return proc.engine._ctrl_screens
-
-    def test_a_band_of_five_controls_is_two_pages_named_by_omx_panel(self):
-        self.assertEqual(self.five_controls_band(old=False), [
-            ["Band 1 1", ["p0", "p1", "p2", "p3"]], ["Band 1 2", ["p4"]],
-            ["Filter 1", ["p5", "p6", "p7", "p8"]], ["Filter 2", ["p9"]]])
-
-    def test_without_per_page_support_a_band_of_five_names_its_screens_by_their_content(self):
-        self.assertEqual(self.five_controls_band(old=True), [
-            ["Band 1: Freq Gain Q Type", ["p0", "p1", "p2", "p3"]], ["Band 1: On", ["p4"]],
-            ["Filter: Freq 5 Freq 6 Freq 7 Freq 8", ["p5", "p6", "p7", "p8"]], ["Filter: Freq 9", ["p9"]]])
-
-    def test_without_omx_panel_the_pages_follow_the_parameter_order(self):
+    def test_without_omx_panel_there_are_no_pages_and_it_is_said_once(self):
+        os.unlink(os.path.join(self.bin, "omx-panel"))
         self.big()
         with self.assertLogs(level=logging.WARNING) as logs:
             proc = self.add(self.chain(), "PH/Big")
             self.add(self.chain(2), "PH/Big")
             logging.warning("end")
-        self.assertEqual([s[0] for s in proc.engine._ctrl_screens], [
-            "Page 1: Freq 0 Freq 1 Freq 2 Freq 3", "Page 1: Freq 4 Freq 5 Freq 6 Freq 7", "Page 2"])
-        self.assertEqual(proc.engine._ctrl_screens[2][1], ["p8", "p9"])
-        self.assertEqual(len([r for r in logs.output if "omx-panel" in r]), 1)
+        self.assertEqual(proc.engine._ctrl_screens, [], "no cut of the engine's own stands in")
+        self.assertEqual(len([r for r in logs.output if "omx-panel is not installed" in r]), 1)
 
     SYNTH = "PH/clap:/usr/lib/clap/test.clap#org.test.synth"
     SYNTH_URI = "clap:/usr/lib/clap/test.clap#org.test.synth"
@@ -1081,13 +1116,11 @@ class test_pages(plugin_hostd_case):
             os.environ["PROBE_STUB_FAIL"] = "1"
         return log
 
-    def test_without_a_descriptor_the_catalogue_names_the_parameters_and_says_nothing_of_steps(self):
-        self.serve()
+    def test_without_a_descriptor_there_are_no_pages_the_catalogue_does_not_stand_in(self):
+        self.serve(descriptors={})
         proc = self.add(self.chain(), self.SYNTH)
-        self.assertEqual([s[1] for s in proc.engine._ctrl_screens], [["1", "2"]])
-        wave = proc.controllers_dict["2"]
-        self.assertEqual((wave.name, wave.value_max, wave.is_integer), ("Wave", 3.0, False),
-                         "stepped is the daemon's to say, not the engine's guess from the scan")
+        self.assertEqual(proc.engine._ctrl_screens, [], "no cut of the engine's own from the scan's parameters")
+        self.assertNotIn("1", proc.controllers_dict)
 
     def test_a_stepped_parameter_comes_from_the_daemons_descriptor(self):
         self.serve(descriptors={self.SYNTH_URI: os.path.join(FIXTURES, "synth.descriptor.json")})
@@ -1119,19 +1152,19 @@ class test_pages(plugin_hostd_case):
 
     def test_the_probe_runs_once_per_plugin(self):
         log = self.probe_stub()
-        self.serve()
+        self.serve(descriptors={})
         self.add(self.chain(), self.SYNTH)
         self.add(self.chain(2), self.SYNTH)
         with open(log) as f:
             self.assertEqual(len(f.readlines()), 1)
 
-    def test_a_probe_that_refuses_leaves_the_catalogue_parameters_and_says_so_once(self):
+    def test_a_probe_that_refuses_leaves_no_pages_and_says_so_once(self):
         self.probe_stub(fail=True)
-        self.serve()
+        self.serve(descriptors={})
         with self.assertLogs(level=logging.WARNING) as logs:
             proc = self.add(self.chain(), self.SYNTH)
             self.add(self.chain(2), self.SYNTH)
-        self.assertFalse(proc.controllers_dict["2"].is_integer)
+        self.assertEqual(proc.engine._ctrl_screens, [])
         self.assertEqual(len([r for r in logs.output if "the probe made none" in r]), 1)
 
     def test_a_pending_scan_is_waited_for_not_probed(self):
@@ -1156,29 +1189,25 @@ class test_easy(plugin_hostd_case):
         path = os.path.join(self.tmp, "easy.descriptor.json")
         with open(path, "w") as f:
             json.dump(descriptor, f)
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
         fake = self.serve(descriptors={"urn:test:big": path})
         return fake, self.add(self.chain(), "PH/Big")
 
     def test_the_first_controller_page_is_easy_and_no_control_repeats(self):
         fake, proc = self.easy_plugin()
         pages = proc.engine.pages()
-        self.assertEqual((pages[0][0], [r[0] for r in pages[0][1]]), ("Easy", ["p3", "p1"]))
-        symbols = [r[0] for _, rows in pages for r in rows]
+        self.assertEqual((pages[0][0], [r[0] if r else None for r in pages[0][1]]), ("Easy", ["p3", "p1", None, None]))
+        symbols = [r[0] for _, rows in pages for r in rows if r]
         self.assertEqual(len(symbols), len(set(symbols)))
-        self.assertEqual(proc.engine._ctrl_screens[0][1], ["p3", "p1"], "the first screen is the Easy page")
+        self.assertEqual(proc.engine._ctrl_screens[0][1], ["p3", "p1", None, None], "the first screen is the Easy page")
 
     def test_easy_comes_before_the_plugins_remote_pages(self):
         fake, proc = self.easy_plugin()
-        proc.engine.remote_pages = lambda dcontrols: [("Macros", [("p3", "L3", None, {}), ("p5", "L5", None, {})])]
-        self.assertEqual([(n, [r[0] for r in rows]) for n, rows in proc.engine.pages()][:2],
-                         [("Easy", ["p3", "p1"]), ("Macros", ["p5"])])
-
-    def test_an_omx_panel_without_easy_first_keeps_the_pages_it_gives(self):
-        os.environ["OMX_PANEL_STUB_NO_EASY"] = "1"
-        self.addCleanup(os.environ.pop, "OMX_PANEL_STUB_NO_EASY", None)
-        fake, proc = self.easy_plugin()
-        self.assertNotEqual(proc.engine.pages()[0][0], "Easy")
+        proc.engine.remote_ids = lambda dcontrols: [{"name": "Macros", "ids": ["p3", "p5"]}]
+        proc.engine.pages_cache = None
+        ph.layout_cache.clear()
+        self.assertEqual([(n, [r[0] if r else None for r in rows]) for n, rows in proc.engine.pages()][:2],
+                         [("Easy", ["p3", "p1", None, None]), ("Macros", ["p3", "p5", None, None])],
+                         "a declared page is not edited: the Easy control may sit on it too")
 
 
 class test_compare(plugin_hostd_case):
@@ -1240,13 +1269,8 @@ class test_compare(plugin_hostd_case):
         titles = [t for _, t, _ in engine.compare_options()]
         self.assertEqual(titles[3:5], ["\u2612 Compare D", "Copy D to A"])
 
-    def test_an_omx_panel_too_old_for_it_offers_no_compare(self):
-        os.environ["OMX_PANEL_STUB_NO_EASY"] = "1"
-        self.addCleanup(os.environ.pop, "OMX_PANEL_STUB_NO_EASY", None)
-        fake, proc = self.easy_plugin()
-        self.assertEqual(proc.engine.compare_options(), [])
-
     def test_no_omx_panel_no_compare(self):
+        os.unlink(os.path.join(self.bin, "omx-panel"))
         fake = self.serve()
         proc = self.add(self.chain(), "PH/Amp")
         self.assertEqual(proc.engine.compare_options(), [])
@@ -1614,7 +1638,6 @@ class test_protocol_03(plugin_hostd_case):
 
     def killed_and_replayed(self, bulk="1"):
         self.start_new(bulk)
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
         chain = self.chain()
         proc = self.add(chain, "PH/Amp")
         proc.controllers_dict["gain"].set_value(4.5)

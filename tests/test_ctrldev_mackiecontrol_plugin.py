@@ -70,10 +70,7 @@ class test_mackiecontrol_plugin(plugin_hostd_case):
 
     def setUp(self):
         super().setUp()
-        # The surface has eight encoders: its pages are omx-panel's pages of eight, which an omx-panel that
-        # lays out pages of four (--per-page) would split in halves
-        os.environ["OMX_PANEL_STUB_OLD"] = "1"
-        os.symlink(os.path.join(FIXTURES, "omx-panel"), os.path.join(self.bin, "omx-panel"))
+        # The surface has eight encoders: its pages are omx-panel's pages of eight, the engine's cut at the surface's width
         self.fake = self.serve(descriptors={"urn:test:big": os.path.join(FIXTURES, "big.descriptor.json")})
         self.chain_ = self.chain()
         self.proc = self.add(self.chain_, "PH/Big")
@@ -106,9 +103,10 @@ class test_mackiecontrol_plugin(plugin_hostd_case):
 
     def test_the_v_pots_show_the_layout_page_of_the_selected_plugin(self):
         self.press(PLUGIN_ASSIGN)
-        self.assertEqual([name for name, _ in self.dev.surface_pages.pages()], ["Main 1", "Main 2"],
-                         "the surface's pages are omx-panel's pages of the plugin")
-        self.assertEqual(self.top(), [f"Freq {i} "[:7] for i in range(8)], "the LCD names the page's eight controls")
+        self.assertEqual([name for name, _ in self.dev.surface_pages.pages()], ["Easy", "Main"],
+                         "the surface's pages are omx-panel's pages of the plugin, cut at eight")
+        self.assertEqual(self.top(), [f"Freq {i} "[:7] for i in range(4)] + ["       "] * 4,
+                         "the LCD names the page's controls and leaves the empty slots blank")
         p0 = self.proc.controllers_dict["p0"]
         self.assertEqual((p0.value, p0.value_min, p0.value_max), (10, 0, 100))
         self.assertEqual(self.out.strip(1, 0).strip(), "10", "and shows their values")
@@ -129,14 +127,15 @@ class test_mackiecontrol_plugin(plugin_hostd_case):
     def test_the_channel_buttons_page_and_the_control_screen_follows(self):
         self.press(PLUGIN_ASSIGN)
         self.press(CHANNEL_RIGHT)
-        self.assertEqual(self.top()[:3], ["Freq 8 ", "Freq 9 ", "       "], "page 2 of the layout, two controls")
-        self.assertEqual(self.out.rings[2], 0, "an empty slot's ring is dark")
+        self.assertEqual(self.top()[:3], ["Freq 4 ", "Freq 5 ", "Freq 6 "], "page 2 of the layout")
+        self.assertEqual(self.out.rings[6], 0, "a meter's slot is blank and its ring dark")
         screens = list(self.proc.get_ctrl_screens())
-        self.assertEqual(screens[self.proc.get_current_screen_index()], "Main 2", "the GUI's page is the surface's")
+        self.assertEqual(screens[self.proc.get_current_screen_index()], "Main: Freq 4 - Freq 7",
+                         "the GUI's page is the one that holds the surface page's first control")
         self.dev.refresh()
-        self.assertEqual(self.top()[0], "Freq 8 ", "a refresh keeps the page")
+        self.assertEqual(self.top()[0], "Freq 4 ", "a refresh keeps the page")
         self.press(CHANNEL_RIGHT)
-        self.assertEqual(self.top()[0], "Freq 8 ", "past the last page nothing moves")
+        self.assertEqual(self.top()[0], "Freq 4 ", "past the last page nothing moves")
         self.press(CHANNEL_LEFT)
         self.assertEqual(self.top()[0], "Freq 0 ")
 

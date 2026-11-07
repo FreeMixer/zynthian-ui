@@ -1,0 +1,79 @@
+{
+  "description": {
+    "family": "none",
+    "fingerprint": "24f7ae994f6c0154993c177fea08572c512e548179a3788e4e531dce4f458532",
+    "easy": [
+      "p1",
+      "p2"
+    ],
+    "params": [
+      {
+        "kind": "number",
+        "symbol": "p1",
+        "name": "Level",
+        "unit": "none",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "p2",
+        "name": "Wave",
+        "unit": "none",
+        "scale": "stepped",
+        "step": 1,
+        "min": 0,
+        "max": 3,
+        "default": 0
+      }
+    ],
+    "sections": [
+      {
+        "key": "controls",
+        "labelKey": "",
+        "label": "Controls"
+      }
+    ],
+    "controls": [
+      {
+        "symbol": "p1",
+        "section": "controls",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Level",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p2",
+        "section": "controls",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Wave",
+        "visibleWhen": null
+      }
+    ],
+    "roles": [],
+    "displays": [],
+    "pages": [
+      {
+        "section": null,
+        "sectionName": "Easy",
+        "pageName": "Easy",
+        "ids": [
+          1,
+          2,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      }
+    ]
+  },
+  "refusals": []
+}

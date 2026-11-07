@@ -1,0 +1,326 @@
+{
+  "description": {
+    "family": "none",
+    "fingerprint": "3434b0810d10714481f9211008955e8019b033c381d39270f5aa6bd690a36f3b",
+    "easy": [
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "params": [
+      {
+        "kind": "number",
+        "symbol": "p0",
+        "name": "Freq 0",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p1",
+        "name": "Freq 1",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p2",
+        "name": "Freq 2",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p3",
+        "name": "Freq 3",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p4",
+        "name": "Freq 4",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p5",
+        "name": "Freq 5",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p6",
+        "name": "Freq 6",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p7",
+        "name": "Freq 7",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p8",
+        "name": "Freq 8",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "p9",
+        "name": "Freq 9",
+        "unit": "hz",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 100,
+        "default": 10
+      },
+      {
+        "kind": "number",
+        "symbol": "gr",
+        "name": "Gain Reduction",
+        "unit": "db",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 20,
+        "default": 0
+      },
+      {
+        "kind": "number",
+        "symbol": "out",
+        "name": "Output Level",
+        "unit": "db",
+        "scale": "linear",
+        "step": 0,
+        "min": -45,
+        "max": 20,
+        "default": -45
+      }
+    ],
+    "sections": [
+      {
+        "key": "main",
+        "labelKey": "",
+        "label": "Main",
+        "bars": [
+          {
+            "controls": [
+              "p0",
+              "p1",
+              "p2",
+              "p3",
+              "p4",
+              "p5",
+              "p6",
+              "p7",
+              "p8",
+              "p9"
+            ],
+            "labels": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6",
+              "7",
+              "8",
+              "9"
+            ],
+            "tied": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ]
+          }
+        ]
+      }
+    ],
+    "controls": [
+      {
+        "symbol": "p0",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 0",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p1",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 1",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p2",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 2",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p3",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 3",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p4",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 4",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p5",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 5",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p6",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 6",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p7",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 7",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p8",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 8",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "p9",
+        "section": "main",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 9",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "gr",
+        "section": "main",
+        "widget": "auto",
+        "labelKey": "",
+        "label": "Gain Reduction",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "out",
+        "section": "main",
+        "widget": "auto",
+        "labelKey": "",
+        "label": "Output Level",
+        "visibleWhen": null
+      }
+    ],
+    "roles": [],
+    "displays": [],
+    "pages": [
+      {
+        "section": null,
+        "sectionName": "Easy",
+        "pageName": "Easy",
+        "ids": [
+          "p0",
+          "p1",
+          "p2",
+          "p3",
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "section": 0,
+        "sectionName": "Main",
+        "pageName": "Main",
+        "ids": [
+          "p4",
+          "p5",
+          "p6",
+          "p7",
+          "p8",
+          "p9",
+          "gr",
+          "out"
+        ]
+      }
+    ]
+  },
+  "refusals": []
+}

@@ -46,6 +46,11 @@ class zynthian_ctrldev_surface_pages:
         processor = processor or self.processor
         if processor is None:
             return []
+        engine = getattr(processor, "engine", None)
+        if getattr(engine, "blank_slots", False):
+            # omx-panel's cut at this surface's width, a hidden control's slot left blank: the surface cuts nothing
+            return [(name, [processor.controllers_dict.get(slot[0]) if slot else None for slot in slots])
+                    for name, slots in engine.pages(self.width)]
         zctrls = sorted(processor.controllers_dict.values(), key=lambda z: z.display_priority, reverse=True)
         groups = {}
         for zctrl in zctrls:
@@ -75,11 +80,11 @@ class zynthian_ctrldev_surface_pages:
             return 0
         try:
             screens = list(processor.get_ctrl_screens().values())
-            first = screens[processor.get_current_screen_index()][0]
-        except (IndexError, TypeError, AttributeError):
+            first = next(z for z in screens[processor.get_current_screen_index()] if z)
+        except (IndexError, TypeError, AttributeError, StopIteration):
             return 0
         for i, (name, zctrls) in enumerate(self.pages(processor)):
-            if first in zctrls:
+            if first in [z for z in zctrls if z]:
                 return i
         return 0
 
@@ -99,12 +104,12 @@ class zynthian_ctrldev_surface_pages:
             return False
         self.index = index
         try:
-            first = pages[index][1][0]
+            first = next(z for z in pages[index][1] if z)
             for i, screen in enumerate(self.processor.get_ctrl_screens().values()):
                 if first in screen:
                     self.processor.set_current_screen_index(i)
                     break
-        except (IndexError, AttributeError) as e:
+        except (IndexError, AttributeError, StopIteration) as e:
             logging.debug(f"Surface page {index} has no control screen => {e}")
         return True
 
