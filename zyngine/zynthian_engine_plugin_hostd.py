@@ -1410,6 +1410,8 @@ class zynthian_engine_plugin_hostd(zynthian_engine):
     def generate_ctrl_screens(self, zctrl_dict):
         """The screens are omx-panel's pages as they come: the page's name, its slots in order, a blank slot None. The base
         cutter, which would cut by group in fours and close every gap, is not asked."""
+        if zctrl_dict is not self.zctrls:
+            return super().generate_ctrl_screens(zctrl_dict)  # the signal-path controls are no plugin page
         names = set()
         for name, rows in self.screen_pages:
             while name in names:
