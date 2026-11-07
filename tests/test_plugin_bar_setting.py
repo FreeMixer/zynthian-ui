@@ -199,8 +199,8 @@ class plugin_bar_reaches_the_daemon_after_a_restart(engine_tests.plugin_hostd_ca
             with self.assertRaises(ph.plugin_hostd_error) as refused:
                 self.add(self.chain(2), "PH/Amp")
         self.assertEqual(refused.exception.code, -516)
-        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "pin_clear")],
-                         ["pin_accept urn:test:amp", "pin_clear urn:test:amp"])
+        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "pin_clear", "pin_reload")],
+                         ["pin_accept urn:test:amp", "pin_clear urn:test:amp", "pin_reload"])
 
 
 if __name__ == "__main__":

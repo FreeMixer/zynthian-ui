@@ -1356,8 +1356,8 @@ class test_below_bar(plugin_hostd_case):
             with mock.patch.dict(os.environ, {"ZYNTHIAN_PLUGIN_BAR": "qualified-only"}):
                 with self.assertRaises(ph.plugin_hostd_error) as refused:
                     self.add(self.chain(), "PH/Amp")
-        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "pin_clear", "add")],
-                         ["pin_clear urn:test:amp", "add urn:test:amp 1000 own"])
+        self.assertEqual([l for l in fake.lines if l.split()[0] in ("pin_accept", "pin_clear", "pin_reload", "add")],
+                         ["pin_clear urn:test:amp", "pin_reload", "add urn:test:amp 1000 own"])
         self.assertEqual(refused.exception.code, -516)
 
     def test_a_plugin_that_crashed_in_qualification_runs_alone_and_nothing_is_accepted(self):
