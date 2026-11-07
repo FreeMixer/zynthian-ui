@@ -1,0 +1,523 @@
+{
+  "description": {
+    "family": "none",
+    "fingerprint": "253c24697a0bd4bfdd09c36f76e35d57d1a21deaa5ad51c3b0d90e3732afdccb",
+    "easy": [
+      "master",
+      "gain1",
+      "freq1"
+    ],
+    "params": [
+      {
+        "kind": "number",
+        "symbol": "master",
+        "name": "Master",
+        "unit": "db",
+        "scale": "linear",
+        "step": 0,
+        "min": -20,
+        "max": 20,
+        "default": 0
+      },
+      {
+        "kind": "number",
+        "symbol": "freq1",
+        "name": "Freq 1",
+        "unit": "hz",
+        "scale": "log",
+        "step": 0,
+        "min": 20,
+        "max": 20000,
+        "default": 1000
+      },
+      {
+        "kind": "number",
+        "symbol": "gain1",
+        "name": "Gain 1",
+        "unit": "db",
+        "scale": "linear",
+        "step": 0,
+        "min": -20,
+        "max": 20,
+        "default": 0
+      },
+      {
+        "kind": "number",
+        "symbol": "q1",
+        "name": "Q 1",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0.1,
+        "max": 10,
+        "default": 1
+      },
+      {
+        "kind": "number",
+        "symbol": "width1",
+        "name": "Width 1",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "freq2",
+        "name": "Freq 2",
+        "unit": "hz",
+        "scale": "log",
+        "step": 0,
+        "min": 20,
+        "max": 20000,
+        "default": 1000
+      },
+      {
+        "kind": "number",
+        "symbol": "gain2",
+        "name": "Gain 2",
+        "unit": "db",
+        "scale": "linear",
+        "step": 0,
+        "min": -20,
+        "max": 20,
+        "default": 0
+      },
+      {
+        "kind": "number",
+        "symbol": "q2",
+        "name": "Q 2",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0.1,
+        "max": 10,
+        "default": 1
+      },
+      {
+        "kind": "number",
+        "symbol": "width2",
+        "name": "Width 2",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "freq3",
+        "name": "Freq 3",
+        "unit": "hz",
+        "scale": "log",
+        "step": 0,
+        "min": 20,
+        "max": 20000,
+        "default": 1000
+      },
+      {
+        "kind": "number",
+        "symbol": "gain3",
+        "name": "Gain 3",
+        "unit": "db",
+        "scale": "linear",
+        "step": 0,
+        "min": -20,
+        "max": 20,
+        "default": 0
+      },
+      {
+        "kind": "number",
+        "symbol": "q3",
+        "name": "Q 3",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0.1,
+        "max": 10,
+        "default": 1
+      },
+      {
+        "kind": "number",
+        "symbol": "width3",
+        "name": "Width 3",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "tone1",
+        "name": "Tone 1",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "tone2",
+        "name": "Tone 2",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "tone3",
+        "name": "Tone 3",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "tone4",
+        "name": "Tone 4",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "tone5",
+        "name": "Tone 5",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      },
+      {
+        "kind": "number",
+        "symbol": "tone6",
+        "name": "Tone 6",
+        "unit": "none",
+        "unitText": "-",
+        "scale": "linear",
+        "step": 0,
+        "min": 0,
+        "max": 1,
+        "default": 0.5
+      }
+    ],
+    "sections": [
+      {
+        "key": "output",
+        "labelKey": "",
+        "label": "Output"
+      },
+      {
+        "key": "band_1",
+        "labelKey": "",
+        "label": "Band 1"
+      },
+      {
+        "key": "band_2",
+        "labelKey": "",
+        "label": "Band 2"
+      },
+      {
+        "key": "band_3",
+        "labelKey": "",
+        "label": "Band 3"
+      },
+      {
+        "key": "tone",
+        "labelKey": "",
+        "label": "Tone",
+        "bars": [
+          {
+            "controls": [
+              "tone1",
+              "tone2",
+              "tone3",
+              "tone4",
+              "tone5",
+              "tone6"
+            ],
+            "labels": [
+              "1",
+              "2",
+              "3",
+              "4",
+              "5",
+              "6"
+            ],
+            "tied": [
+              [],
+              [],
+              [],
+              [],
+              [],
+              []
+            ]
+          }
+        ]
+      }
+    ],
+    "controls": [
+      {
+        "symbol": "master",
+        "section": "output",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Master",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "freq1",
+        "section": "band_1",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 1",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "gain1",
+        "section": "band_1",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Gain 1",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "q1",
+        "section": "band_1",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Q 1",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "width1",
+        "section": "band_1",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Width 1",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "freq2",
+        "section": "band_2",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 2",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "gain2",
+        "section": "band_2",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Gain 2",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "q2",
+        "section": "band_2",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Q 2",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "width2",
+        "section": "band_2",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Width 2",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "freq3",
+        "section": "band_3",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Freq 3",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "gain3",
+        "section": "band_3",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Gain 3",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "q3",
+        "section": "band_3",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Q 3",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "width3",
+        "section": "band_3",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Width 3",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "tone1",
+        "section": "tone",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Tone 1",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "tone2",
+        "section": "tone",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Tone 2",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "tone3",
+        "section": "tone",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Tone 3",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "tone4",
+        "section": "tone",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Tone 4",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "tone5",
+        "section": "tone",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Tone 5",
+        "visibleWhen": null
+      },
+      {
+        "symbol": "tone6",
+        "section": "tone",
+        "widget": "knob",
+        "labelKey": "",
+        "label": "Tone 6",
+        "visibleWhen": null
+      }
+    ],
+    "roles": [],
+    "displays": [],
+    "pages": [
+      {
+        "section": null,
+        "sectionName": "Easy",
+        "pageName": "Easy",
+        "ids": [
+          "master",
+          "gain1",
+          "freq1",
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "section": 1,
+        "sectionName": "Band 1",
+        "pageName": "Band 1",
+        "ids": [
+          "q1",
+          "width1",
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "section": 2,
+        "sectionName": "Band 2",
+        "pageName": "Band 2",
+        "ids": [
+          "freq2",
+          "gain2",
+          "q2",
+          "width2",
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "section": 3,
+        "sectionName": "Band 3",
+        "pageName": "Band 3",
+        "ids": [
+          "freq3",
+          "gain3",
+          "q3",
+          "width3",
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "section": 4,
+        "sectionName": "Tone",
+        "pageName": "Tone",
+        "ids": [
+          "tone1",
+          "tone2",
+          "tone3",
+          "tone4",
+          "tone5",
+          "tone6",
+          null,
+          null
+        ]
+      }
+    ]
+  },
+  "refusals": []
+}
