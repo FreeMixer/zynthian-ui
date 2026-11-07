@@ -77,7 +77,7 @@ class Travel:
         self.default = default
         self.ticks = list(ticks) if ticks else None
         self.stepped = self.ticks is not None or travel.get("scale") == "stepped"
-        self.fraction = (thresholds or {}).get("stepFraction", 0.01)
+        self.fraction = (thresholds or load_table()["thresholds"])["stepFraction"]  # the declaration's, never a default here
 
     @classmethod
     def of(cls, zctrl, thresholds=None):
