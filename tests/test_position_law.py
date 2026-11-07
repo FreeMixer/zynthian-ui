@@ -211,7 +211,8 @@ class EngineWiring(unittest.TestCase):
     def test_no_other_engine_names_the_law(self):
         for name in os.listdir(os.path.join(ROOT, "zyngine")):
             if name.endswith(".py") and name not in ("zynthian_engine_plugin_hostd.py", "zynthian_position_law.py",
-                                                      "zynthian_controller.py"):
+                                                      "zynthian_controller.py",
+                                                      "zynthian_panel_gestures.py"):  # the gestures move a value ON the law
                 with open(os.path.join(ROOT, "zyngine", name)) as f:
                     self.assertNotIn("position_law", f.read(), name)
 
