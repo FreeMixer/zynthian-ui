@@ -22,6 +22,7 @@
 import os
 import sys
 import json
+import types
 import argparse
 import importlib.util
 
@@ -32,8 +33,18 @@ FACTORY_BANK = ["factory", None, "Factory", None]
 USER_BANK = ["user", None, "User", None]
 
 
+def bare_package():
+    """The zyngine package without running its __init__, which imports every engine and its libraries: the modules
+    loaded here import each other as zyngine.<module>. A zyngine already imported (the UI's, or a test's) is kept."""
+    if "zyngine" not in sys.modules:
+        package = types.ModuleType("zyngine")
+        package.__path__ = [os.path.join(ROOT, "zyngine")]
+        sys.modules["zyngine"] = package
+
+
 def load_module(name):
     """A zyngine module by its path: the zyngine package imports every engine and its libraries."""
+    bare_package()
     spec = importlib.util.spec_from_file_location(name, os.path.join(ROOT, "zyngine", name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
