@@ -8,6 +8,12 @@
 # them to the panel, which reads a two-finger spread as the gesture table's `pinch`. It holds no gesture law: the
 # word, the palm guard and the scaling are the table's and zynthian_panel_gestures'.
 #
+# Facts of the Pi it was written on (read-only, 2026-11-07): the Zynthian there has a generic HDMI display and no touch
+# device (/proc/bus/input/devices lists the power button and the two HDMI ports), no X session runs, X uses
+# xserver-xorg-input-evdev, python3-evdev is installed, and /dev/input/event* are root:input, rw for root, which is the
+# user Zynthian runs as. So no multi-touch device was read here: the parser is proved on synthetic slot streams, and a
+# machine with no device or no permission makes EvdevSource raise NoTouchDevice with the system's own words.
+#
 # The source of events is separate from the parser: `Slots` takes (type, code, value) triples, so the tests feed it
 # synthetic two-slot streams; `EvdevSource` reads a real device and refuses, with the system's own words, a device it
 # may not open or a machine with none.
