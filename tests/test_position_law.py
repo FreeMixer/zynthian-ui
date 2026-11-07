@@ -157,6 +157,25 @@ class Controllers(unittest.TestCase):
     def test_midi_law_of_a_jalv_controller_is_untouched(self):
         j = zctrl(is_logarithmic=True, midi_cc_val1=20.0, midi_cc_val2=20000.0)
         self.assertEqual(j.get_ctrl_midi_val(), int(127 * upstream_log_plot(j)))
+        j.set_value(20.0, send=False)
+        j.midi_cc_mode = 0
+        j.midi_control_change(64, send=False)
+        self.assertEqual(j.value, 20.0 + 19980.0 * (math.pow(10, 64 / 127) - 1) / 9)
+
+    def test_cc_sweep_lands_where_the_knob_draws(self):
+        for cc in (0, 1, 32, 64, 96, 126, 127):
+            z = zctrl(is_logarithmic=True, position_law=PH_TRAVEL, midi_cc_val1=20.0, midi_cc_val2=20000.0)
+            z.midi_cc_mode = 0
+            z.midi_control_change(cc, send=False)
+            self.assertAlmostEqual(plot(z), cc / 127, places=12)
+            self.assertEqual(z.get_ctrl_midi_val(), cc)
+
+    def test_cc_of_a_linear_plugin_hostd_controller_lands_where_it_draws(self):
+        t = {"scale": "linear", "min": -12.0, "max": 12.0}
+        z = zctrl(value_min=-12.0, value_max=12.0, value=0.0, position_law=t, midi_cc_val1=-12.0, midi_cc_val2=12.0)
+        z.midi_cc_mode = 0
+        z.midi_control_change(64, send=False)
+        self.assertAlmostEqual(plot(z), 64 / 127, places=12)
 
 
 class EngineWiring(unittest.TestCase):
