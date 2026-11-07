@@ -9,8 +9,9 @@
 # threshold and no table of its own: without the installed omx-panel (or the file ZYNTHIAN_OMX_GESTURES names) it
 # refuses, it does not fall back to a copy.
 #
-# Zynthian takes every word but `second` (a handle's Q) and `paint` (a bar group's sweep): it has no handle and
-# no bar here. Pinch is not read.
+# Zynthian takes every word but `second` (a handle's Q, refused as GESTURE_NOT_TAKEN) and `paint` (a bar group's
+# sweep, which is not an input read here). A bar or a handle is a one-value control read from the same table by its
+# key; the fork's pages draw none, and no control of it is two-dimensional, so an xy has no surface. Pinch is not read.
 #
 # Time is given by the caller (a Tk event's time, a script's timestamp), so a gesture is the same on the Pi and in
 # a test.
@@ -273,6 +274,8 @@ class Gestures:
         word = self.word(inp)
         if not word:
             return self.refuse("GESTURE_NOT_IN_TABLE", t, f"a {self.widget} has no {inp}")
+        if word != "step":
+            return self.refuse("GESTURE_NOT_TAKEN", t, f"the {word} of a {self.widget} has no surface here")  # a handle's Q
         G = self.table["thresholds"]
         T = self.table["timings"]
         count = abs(n) * (G["coarseSteps"] if coarse else 1)

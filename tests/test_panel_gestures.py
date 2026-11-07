@@ -242,6 +242,42 @@ class ReadFromTheDeclaration(panel_case):
             self.assertIsNone(re.search(rf"(?<![\w.\"]){re.escape(str(n))}(?![\w.])", code), f"a literal {n} in the module")
 
 
+class BarAndHandleFromTheTable(panel_case):
+    """A bar and a handle are read from the table by their key, as a fader is: drag, fine, step and reset move the
+    value; a handle's wheel is its Q, which Zynthian does not take; nothing moves on a key the table gives it no word."""
+
+    def row(self, widget):
+        z = self.zctrls["gain"]
+        z.set_value(0.0)
+        return pg.Gestures(widget, pg.Travel.of(z), lambda: z.value, z.set_value, (0, 0, 400, 50),
+                           orientation="horizontal", travel_px=380, table=self.table), z
+
+    def test_a_bar_moves_as_declared(self):
+        row, z = self.row("bar")
+        row.step(1, 0)
+        self.assertAlmostEqual(z.value, 0.5)  # the declared step of the gain
+        row.key("BackSpace", 1000)
+        self.assertEqual(z.value, 0.0)
+        self.assertEqual([g["word"] for g in row.log], ["step", "reset"])
+
+    def test_a_handles_wheel_is_its_q_and_moves_no_value(self):
+        row, z = self.row("handle")
+        row.step(1, 0)
+        self.assertEqual(z.value, 0.0)
+        self.assertEqual([r["code"] for r in row.refused], ["GESTURE_NOT_TAKEN"])
+        row.key("Up", 1000)  # the arrow is a step
+        self.assertAlmostEqual(z.value, 0.5)
+
+    def test_a_handle_drags_and_a_bar_is_not_a_switch(self):
+        row, z = self.row("handle")
+        row.press(100, 25, 0)
+        row.motion(200, 25, 20)
+        row.motion(300, 25, 40)
+        row.release(300, 25, 60)
+        self.assertGreater(z.value, 0.0)
+        self.assertEqual(row.log[0]["word"], "drag")
+
+
 class OnTheTkEvents(panel_case):
     """Tk's events through the helpers the widget binds."""
 
